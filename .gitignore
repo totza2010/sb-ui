@@ -1,6 +1,7 @@
 /sb-ui
 /sb-ui.exe
 /dist/
+/tmp/
 
 # Local config (contains host + credentials; written by the setup wizard).
 /.env

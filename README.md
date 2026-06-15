@@ -76,15 +76,31 @@ SB_UI_ADDR=:8000 ./sb-ui   # default :8000
 ./sb-ui --version
 ```
 
-## Frontend dev
+## Dev (hot reload)
 
-```bash
-cd frontend
-npm install
-npm run dev        # Vite dev server (proxy /api → running sb-ui)
+No more rebuilding the `.exe` by hand. Two watchers run together:
+
+- **Vite** serves the React app with HMR on `http://localhost:5173` and proxies
+  `/api` + `/ws` to the Go backend on `:8000`.
+- **[air](https://github.com/air-verse/air)** rebuilds + restarts the Go backend
+  (~1s) on any `.go` change. The backend reads `.env` for the SSH/local
+  connection, same as the built binary.
+
+One command (Windows) starts both — open `http://localhost:5173`:
+
+```powershell
+./dev.ps1
 ```
 
-`build.sh` runs `npm run build` and copies `frontend/dist` → `web/` for embedding.
+Or run them in two terminals:
+
+```bash
+air                       # Go backend, hot-reload, :8000   (go install github.com/air-verse/air@latest)
+cd frontend && npm run dev # Vite + HMR, :5173
+```
+
+For a one-off production-style bundle, `build.sh` runs `npm run build` and copies
+`frontend/dist` → `web/` for embedding into the binary.
 
 ## Release
 
