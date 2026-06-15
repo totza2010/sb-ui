@@ -10,7 +10,13 @@ tmp_dir = "tmp"
   bin = "./tmp/sb-ui-dev.exe"
   include_ext = ["go"]
   exclude_dir = ["frontend", "web", "tmp", "dist", "deploy", ".git", ".github"]
-  exclude_regex = ["_test\\.go"]
+  exclude_regex = ["_test\\.go", ".*\\.tmp.*"]
+  # Poll file mtimes instead of fsnotify. Editors (and Claude's tools) save
+  # atomically via a temp file + rename, which breaks fsnotify's directory watch
+  # on Windows ("failed to watch ...api.go.tmp...") and leaves the backend dead.
+  # Polling is immune to that.
+  poll = true
+  poll_interval = 500
   delay = 500
   stop_on_error = true
   kill_delay = "2s"
