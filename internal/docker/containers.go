@@ -6,11 +6,12 @@ import (
 )
 
 type ContainerInfo struct {
-	ID     string            `json:"id"`
-	Name   string            `json:"name"`
-	Status string            `json:"status"`
-	Image  string            `json:"image"`
-	Ports  map[string]string `json:"ports"`
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	Status  string            `json:"status"`  // human, e.g. "Up 20 minutes"
+	Running bool              `json:"running"` // from docker State == "running"
+	Image   string            `json:"image"`
+	Ports   map[string]string `json:"ports"`
 }
 
 // ListContainers returns all containers (docker ps -a).
@@ -26,7 +27,7 @@ func ListContainers() []ContainerInfo {
 			continue
 		}
 		var row struct {
-			ID, Names, Status, Image, Ports string
+			ID, Names, Status, State, Image, Ports string
 		}
 		if json.Unmarshal([]byte(line), &row) != nil {
 			continue
@@ -36,8 +37,8 @@ func ListContainers() []ContainerInfo {
 			id = id[:12]
 		}
 		res = append(res, ContainerInfo{
-			ID: id, Name: row.Names, Status: row.Status, Image: row.Image,
-			Ports: parsePorts(row.Ports),
+			ID: id, Name: row.Names, Status: row.Status, Running: row.State == "running",
+			Image: row.Image, Ports: parsePorts(row.Ports),
 		})
 	}
 	return res
