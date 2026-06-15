@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { LayoutDashboard, Package, Settings, Wrench, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, Boxes, FolderTree } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useSetupStatus } from '@/lib/api'
+import { SelfUpdate } from '@/components/SelfUpdate'
 
 const nav = [
   { to: '/',         label: 'Dashboard',    icon: LayoutDashboard },
@@ -73,7 +74,7 @@ export function Sidebar() {
           <PlugZap className="h-3.5 w-3.5" />
           Reconfigure connection
         </button>
-        <p className="text-xs text-muted-foreground/60">Saltbox WebUI v0.1</p>
+        <SelfUpdate />
       </div>
     </aside>
   )

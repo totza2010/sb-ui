@@ -195,6 +195,29 @@ export const useSaltboxUpdate = () =>
     mutationFn: () => request('/apps/saltbox-update', { method: 'POST' }),
   })
 
+// ── sb-ui self-update ────────────────────────────────────────────────────────
+export interface SelfVersion {
+  current: string
+  latest: string
+  update_available: boolean
+  asset: string
+  asset_url?: string
+  release_url?: string
+  note?: string
+}
+
+export const useSelfVersion = () =>
+  useQuery<SelfVersion>({
+    queryKey: ['self-version'],
+    queryFn: () => request('/self/version'),
+    staleTime: 5 * 60_000,
+  })
+
+export const useSelfUpdate = () =>
+  useMutation<{ job_id: string }, Error, void>({
+    mutationFn: () => request('/self/update', { method: 'POST' }),
+  })
+
 export const useApplyPatches = () =>
   useMutation<{ job_id: string }, Error, void>({
     mutationFn: () => request('/apps/apply-patches', { method: 'POST' }),
