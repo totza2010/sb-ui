@@ -23,7 +23,7 @@ export function Sidebar() {
   const { data: status } = useSetupStatus()
 
   return (
-    <aside className="w-56 shrink-0 border-r border-border bg-card flex flex-col min-h-screen">
+    <aside className="w-56 shrink-0 border-r border-border bg-card flex flex-col h-screen">
       {/* Logo */}
       <div className="px-5 py-4 border-b border-border">
         <div className="flex items-center gap-2">
@@ -40,7 +40,7 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 py-3 space-y-0.5 px-3">
+      <nav className="flex-1 overflow-y-auto py-3 space-y-0.5 px-3">
         {nav.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
