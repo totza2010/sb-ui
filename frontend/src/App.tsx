@@ -12,6 +12,7 @@ import { Backup } from '@/pages/Backup'
 import { InstallTypes } from '@/pages/InstallTypes'
 import { Files } from '@/pages/Files'
 import { ConnectionSetup } from '@/pages/ConnectionSetup'
+import { BackendOffline } from '@/components/BackendOffline'
 import { useSetupStatus } from '@/lib/api'
 import { Loader2 } from 'lucide-react'
 
@@ -21,7 +22,7 @@ const queryClient = new QueryClient({
 
 function AppInner() {
   const qc = useQueryClient()
-  const { data: status, isLoading } = useSetupStatus()
+  const { data: status, isLoading, isError, refetch } = useSetupStatus()
 
   if (isLoading) {
     return (
@@ -29,6 +30,10 @@ function AppInner() {
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
     )
+  }
+
+  if (isError) {
+    return <BackendOffline onRetry={() => refetch()} />
   }
 
   if (!status?.configured) {

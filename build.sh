@@ -20,7 +20,10 @@ OUT="${OUT:-$ROOT/sb-ui$EXT}"
 
 if [[ -z "${SKIP_WEB:-}" ]]; then
   echo "==> Building frontend ($FRONTEND)"
-  ( cd "$FRONTEND" && npm ci && npm run build )
+  # npm install (not ci): ci wipes node_modules first, so a failure mid-run
+  # (e.g. a dev vite holding a file lock) leaves deps broken. CI does its own
+  # clean npm ci in the release workflow.
+  ( cd "$FRONTEND" && npm install && npm run build )
 
   echo "==> Copying dist -> web/"
   rm -rf "$ROOT/web"

@@ -534,6 +534,8 @@ export const useSetupStatus = () =>
     queryKey: ['setup-status'],
     queryFn: () => request('/setup/status'),
     staleTime: 0,
+    // When the backend is unreachable, keep polling so the app recovers on its own.
+    refetchInterval: (q) => (q.state.status === 'error' ? 3000 : false),
   })
 
 export const useTestConnection = () =>
