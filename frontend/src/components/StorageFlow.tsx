@@ -7,7 +7,7 @@ import { cn } from '@/lib/cn'
 // outer category card with sub-cards ("Label ×count") listing each instance.
 // Connection lines (measured SVG overlay) show who feeds whom.
 
-type Sub = { label: string; app: string; re: RegExp }
+type Sub = { label: string; app: string; re: RegExp; companion?: RegExp }
 const CATS: { key: string; title: string; subs: Sub[] }[] = [
   { key: 'indexers', title: 'Indexers', subs: [
     { label: 'Prowlarr', app: 'prowlarr', re: /^prowlarr/i },
@@ -32,10 +32,10 @@ const CATS: { key: string; title: string; subs: Sub[] }[] = [
   ] },
   { key: 'scaners', title: 'Scaners', subs: [{ label: 'Autoscan', app: 'autoscan', re: /^autoscan/i }] },
   { key: 'media', title: 'Media Servers', subs: [
-    // each media server is paired with its stats companion
-    { label: 'Plex', app: 'plex', re: /^(plex|tautulli)/i },
-    { label: 'Jellyfin', app: 'jellyfin', re: /^(jellyfin|jellystat)/i },
-    { label: 'Emby', app: 'emby', re: /^(emby|embystat)/i },
+    // count = the media server only; its stats app is a companion underneath
+    { label: 'Plex', app: 'plex', re: /^plex/i, companion: /^tautulli/i },
+    { label: 'Jellyfin', app: 'jellyfin', re: /^jellyfin/i, companion: /^jellystat/i },
+    { label: 'Emby', app: 'emby', re: /^emby/i, companion: /^embystat/i },
   ] },
   { key: 'uploaders', title: 'Uploaders', subs: [
     { label: 'Rclone Browser', app: 'rclonebrowser', re: /^rclonebrowser/i },
@@ -135,19 +135,27 @@ export function StorageFlow() {
     </div>
   )
 
+  const instRow = (c: ContainerInfo, app: string, companion = false) => (
+    <div key={c.id} className={cn('flex items-center gap-1.5', companion && 'ml-3')} title={c.running ? 'running' : c.status}>
+      <Dot ok={c.running} />
+      <span className={cn('text-[11px]', companion ? 'text-muted-foreground' : 'text-foreground')}>{prettyName(c.name, app)}</span>
+    </div>
+  )
+
   const CategoryCard = ({ cat }: { cat: typeof CATS[number] }) => {
-    const subs = cat.subs.map((s) => ({ s, inst: cs.filter((c) => s.re.test(c.name)) })).filter((x) => x.inst.length)
+    const subs = cat.subs.map((s) => ({
+      s,
+      prim: cs.filter((c) => s.re.test(c.name)),
+      comp: s.companion ? cs.filter((c) => s.companion!.test(c.name)) : [],
+    })).filter((x) => x.prim.length || x.comp.length)
     if (!subs.length) return null
     return (
       <div ref={reg(cat.key)} className="rounded-lg border-2 border-border bg-card p-2 space-y-2 min-w-[160px]">
         <div className="text-xs font-semibold text-foreground">{cat.title}</div>
-        {subs.map(({ s, inst }) => (
-          <SubCard key={s.label} label={s.label} count={inst.length}>
-            {inst.map((c: ContainerInfo) => (
-              <div key={c.id} className="flex items-center gap-1.5" title={c.running ? 'running' : c.status}>
-                <Dot ok={c.running} /><span className="text-[11px] text-foreground">{prettyName(c.name, s.app)}</span>
-              </div>
-            ))}
+        {subs.map(({ s, prim, comp }) => (
+          <SubCard key={s.label} label={s.label} count={prim.length}>
+            {prim.map((c) => instRow(c, s.app))}
+            {comp.map((c) => instRow(c, s.app, true))}
           </SubCard>
         ))}
       </div>
