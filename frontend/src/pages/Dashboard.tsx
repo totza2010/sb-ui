@@ -1,9 +1,9 @@
-import { useSystem, useContainers } from '@/lib/api'
+import { useSystem, useContainers, useContainerAction } from '@/lib/api'
 import { Card, CardHeader, CardTitle, CardValue, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { StorageFlow } from '@/components/StorageFlow'
 import { Cpu, MemoryStick, HardDrive, Clock, RefreshCw, Play, Square } from 'lucide-react'
-import { useContainerAction } from '@/lib/api'
 
 function formatBytes(bytes: number) {
   const gb = bytes / 1024 / 1024 / 1024
@@ -27,7 +27,7 @@ function PercentBar({ value }: { value: number }) {
 }
 
 export function Dashboard() {
-  const { data: sys, isLoading: sysLoading } = useSystem()
+  const { data: sys } = useSystem()
   const { data: containers, isLoading: cLoading } = useContainers()
   const action = useContainerAction()
 
@@ -40,14 +40,14 @@ export function Dashboard() {
         <Card>
           <CardHeader><CardTitle><Cpu className="inline h-3.5 w-3.5 mr-1" />CPU</CardTitle></CardHeader>
           <CardContent>
-            <CardValue>{sysLoading ? '…' : `${sys!.cpu_percent.toFixed(1)}%`}</CardValue>
+            <CardValue>{sys ? `${sys.cpu_percent.toFixed(1)}%` : '…'}</CardValue>
             {sys && <PercentBar value={sys.cpu_percent} />}
           </CardContent>
         </Card>
         <Card>
           <CardHeader><CardTitle><MemoryStick className="inline h-3.5 w-3.5 mr-1" />RAM</CardTitle></CardHeader>
           <CardContent>
-            <CardValue>{sysLoading ? '…' : `${sys!.ram_percent.toFixed(0)}%`}</CardValue>
+            <CardValue>{sys ? `${sys.ram_percent.toFixed(0)}%` : '…'}</CardValue>
             {sys && <p className="text-xs text-muted-foreground mt-1">{formatBytes(sys.ram_used)} / {formatBytes(sys.ram_total)}</p>}
             {sys && <PercentBar value={sys.ram_percent} />}
           </CardContent>
@@ -55,7 +55,7 @@ export function Dashboard() {
         <Card>
           <CardHeader><CardTitle><HardDrive className="inline h-3.5 w-3.5 mr-1" />Disk</CardTitle></CardHeader>
           <CardContent>
-            <CardValue>{sysLoading ? '…' : `${sys!.disk_percent.toFixed(0)}%`}</CardValue>
+            <CardValue>{sys ? `${sys.disk_percent.toFixed(0)}%` : '…'}</CardValue>
             {sys && <p className="text-xs text-muted-foreground mt-1">{formatBytes(sys.disk_used)} / {formatBytes(sys.disk_total)}</p>}
             {sys && <PercentBar value={sys.disk_percent} />}
           </CardContent>
@@ -63,9 +63,17 @@ export function Dashboard() {
         <Card>
           <CardHeader><CardTitle><Clock className="inline h-3.5 w-3.5 mr-1" />Uptime</CardTitle></CardHeader>
           <CardContent>
-            <CardValue>{sysLoading ? '…' : formatUptime(sys!.uptime_seconds)}</CardValue>
+            <CardValue>{sys ? formatUptime(sys.uptime_seconds) : '…'}</CardValue>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Storage flow */}
+      <div>
+        <h2 className="text-sm font-medium text-muted-foreground mb-3">Storage</h2>
+        <div className="overflow-x-auto pb-1">
+          <StorageFlow />
+        </div>
       </div>
 
       {/* Container table */}
@@ -90,16 +98,16 @@ export function Dashboard() {
                   <td className="px-4 py-2.5 font-mono text-xs text-foreground">{c.name}</td>
                   <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground truncate max-w-[200px]">{c.image}</td>
                   <td className="px-4 py-2.5">
-                    <Badge variant={c.status === 'running' ? 'success' : 'secondary'}>{c.status}</Badge>
+                    <Badge variant={c.running ? 'success' : 'secondary'}>{c.status}</Badge>
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex justify-end gap-1">
-                      {c.status !== 'running' && (
+                      {!c.running && (
                         <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => action.mutate({ name: c.name, action: 'start' })}>
                           <Play className="h-3.5 w-3.5 text-success" />
                         </Button>
                       )}
-                      {c.status === 'running' && (
+                      {c.running && (
                         <>
                           <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => action.mutate({ name: c.name, action: 'restart' })}>
                             <RefreshCw className="h-3.5 w-3.5 text-warning" />

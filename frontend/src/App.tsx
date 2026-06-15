@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Dashboard } from '@/pages/Dashboard'
@@ -22,6 +23,7 @@ const queryClient = new QueryClient({
 
 function AppInner() {
   const qc = useQueryClient()
+  const pathname = useLocation().pathname
   const { data: status, isLoading, isError, refetch } = useSetupStatus()
 
   if (isLoading) {
@@ -49,18 +51,20 @@ function AppInner() {
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
       <main className="flex-1 overflow-y-auto">
-        <Routes>
-          <Route path="/"       element={<Dashboard />} />
-          <Route path="/apps"   element={<AppManager />} />
-          <Route path="/config" element={<ConfigEditor />} />
-          <Route path="/roles"  element={<RoleBuilder />} />
-          <Route path="/setup"  element={<SetupWizard />} />
-          <Route path="/inventory" element={<Inventory />} />
-          <Route path="/install-types" element={<InstallTypes />} />
-          <Route path="/backup" element={<Backup />} />
-          <Route path="/files" element={<Files />} />
-          <Route path="/logs"   element={<JobsLogs />} />
-        </Routes>
+        <ErrorBoundary key={pathname}>
+          <Routes>
+            <Route path="/"       element={<Dashboard />} />
+            <Route path="/apps"   element={<AppManager />} />
+            <Route path="/config" element={<ConfigEditor />} />
+            <Route path="/roles"  element={<RoleBuilder />} />
+            <Route path="/setup"  element={<SetupWizard />} />
+            <Route path="/inventory" element={<Inventory />} />
+            <Route path="/install-types" element={<InstallTypes />} />
+            <Route path="/backup" element={<Backup />} />
+            <Route path="/files" element={<Files />} />
+            <Route path="/logs"   element={<JobsLogs />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
     </div>
   )

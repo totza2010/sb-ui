@@ -27,7 +27,8 @@ export interface SystemInfo {
 export interface ContainerInfo {
   id: string
   name: string
-  status: string
+  status: string        // human, e.g. "Up 20 minutes"
+  running: boolean
   image: string
   ports: Record<string, string>
 }
@@ -113,6 +114,28 @@ export const useStatus = () =>
     queryFn: () => request('/status'),
     refetchInterval: 20000,
     staleTime: 10000,
+  })
+
+export interface MountDetail {
+  target: string; kind: string; ok: boolean; detail: string
+  size?: string; used?: string; use_pct?: string
+}
+
+export const useMounts = () =>
+  useQuery<MountDetail[]>({
+    queryKey: ['mounts'],
+    queryFn: () => request('/mounts'),
+    refetchInterval: 30000,
+  })
+
+export interface RemoteInfo { name: string; ok: boolean; used?: string; total?: string }
+export interface StorageData { remotes: RemoteInfo[]; local: MountDetail | null }
+
+export const useStorage = () =>
+  useQuery<StorageData>({
+    queryKey: ['storage'],
+    queryFn: () => request('/storage'),
+    refetchInterval: 60000,
   })
 
 export const useApps = () =>

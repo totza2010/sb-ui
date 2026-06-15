@@ -35,6 +35,8 @@ func Mount(r chi.Router) {
 	r.Get("/api/system", systemInfo)
 	r.Get("/api/containers", listContainers)
 	r.Get("/api/status", systemStatus)
+	r.Get("/api/mounts", listMounts)
+	r.Get("/api/storage", storageInfo)
 
 	// Apps + status
 	r.Get("/api/apps", listApps)
