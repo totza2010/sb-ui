@@ -30,7 +30,9 @@ sbui_role_paths_folders_list:
 # Web
 ################################
 
-sbui_role_web_subdomain: "{{ sbui_name }}"
+# Empty subdomain → serve on the apex domain (e.g. https://privox.top) as the
+# landing page. Set to "{{ sbui_name }}" (or any name) to use a subdomain.
+sbui_role_web_subdomain: ""
 sbui_role_web_domain: "{{ user.domain }}"
 sbui_role_web_port: "{{ sbui_port_lookup.meta.port }}"
 
