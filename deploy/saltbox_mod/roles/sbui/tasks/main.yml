@@ -1,0 +1,83 @@
+##########################################################################
+# Title:         Saltbox mod: sb-ui Role                                 #
+# URL:           https://github.com/totza2010/sb-ui                      #
+# --                                                                     #
+##########################################################################
+#                   GNU General Public License v3.0                      #
+##########################################################################
+---
+- name: Add DNS record
+  ansible.builtin.include_tasks: "{{ resources_tasks_path }}/dns/tasker.yml"
+  vars:
+    dns_record: "{{ lookup('role_var', '_dns_record') }}"
+    dns_zone: "{{ lookup('role_var', '_dns_zone') }}"
+    dns_proxy: "{{ lookup('role_var', '_dns_proxy') }}"
+
+- name: Stop Service
+  ansible.builtin.include_tasks: "{{ resources_tasks_path }}/systemd/stop_service.yml"
+  vars:
+    _service_name: "{{ sbui_service_name }}"
+
+- name: Get next available port within the range of '9180-9189'
+  find_open_port:
+    low_bound: 9180
+    high_bound: 9189
+    protocol: both
+  register: sbui_port_lookup
+
+- name: Create directories
+  ansible.builtin.include_tasks: "{{ resources_tasks_path }}/directories/create_directories.yml"
+
+- name: "Get latest sb-ui release metadata"
+  ansible.builtin.include_tasks: "{{ resources_tasks_path }}/git/github_api_request.yml"
+  vars:
+    github_api_url: "{{ sbui_latest_releases_url }}"
+    github_api_result_var: sbui_latest_release_api
+
+- name: "Get URL for latest sb-ui release ({{ sbui_asset_name }})"
+  ansible.builtin.set_fact:
+    sbui_latest_download_url: "{{ ((sbui_latest_release_api.content | from_json).assets
+                                | selectattr('name', 'equalto', sbui_asset_name)
+                                | map(attribute='browser_download_url')
+                                | first) }}"
+  changed_when: false
+
+- name: "Download sb-ui binary"
+  ansible.builtin.get_url:
+    url: "{{ sbui_latest_download_url }}"
+    dest: "{{ sbui_binary_path }}"
+    owner: "{{ user.name }}"
+    group: "{{ user.name }}"
+    mode: "0755"
+    force: true
+  register: x
+  until: "x is not failed"
+  retries: "{{ ansible_retry_count
+            if (not continuous_integration)
+            else ansible_retry_count_ci }}"
+  delay: 10
+
+- name: Import 'sbui.yml' Traefik file provider
+  ansible.builtin.template:
+    src: "sbui.yml.j2"
+    dest: "{{ lookup('role_var', '_paths_location', role='traefik') }}/{{ sbui_name }}.yml"
+    owner: "{{ user.name }}"
+    group: "{{ user.name }}"
+    mode: "0644"
+    force: true
+
+- name: "Import '{{ sbui_service_name }}.service'"
+  ansible.builtin.template:
+    src: sbui.service.j2
+    dest: "/etc/systemd/system/{{ sbui_service_name }}.service"
+    mode: "0644"
+    force: true
+
+- name: Start service
+  ansible.builtin.include_tasks: "{{ resources_tasks_path }}/systemd/manage_service.yml"
+  vars:
+    _service_name: "{{ sbui_service_name }}"
+    _service_state: started
+    _service_enabled: true
+    _service_daemon_reload: true
+    _service_reenable: true

@@ -56,7 +56,9 @@ jobs:
           for arch in amd64 arm64; do
             OUT="dist/sb-ui-linux-$arch" SKIP_WEB=1 bash ./build.sh linux "$arch"
           done
-          ( cd dist && sha256sum sb-ui-linux-* > checksums.txt )
+          # Saltbox mod role (versioned alongside the binary).
+          tar -C deploy/saltbox_mod/roles -czf dist/sb-ui-role.tar.gz sbui
+          ( cd dist && sha256sum sb-ui-linux-* sb-ui-role.tar.gz > checksums.txt )
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -67,4 +69,5 @@ jobs:
           files: |
             dist/sb-ui-linux-amd64
             dist/sb-ui-linux-arm64
+            dist/sb-ui-role.tar.gz
             dist/checksums.txt

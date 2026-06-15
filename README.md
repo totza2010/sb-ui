@@ -13,19 +13,48 @@ in-repo under `frontend/`.
 Full Go port of the Python backend (Phases 0–7 ✅). All HTTP + WS endpoints match
 the Python contract; verified against a real Saltbox host over SSH.
 
-## Install (Saltbox host)
+## Install
+
+Two paths — pick one.
+
+### A. Standalone (any host)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/saltyorg/saltbox/master/sb-ui/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/totza2010/sb-ui/master/install.sh | sudo bash
 ```
 
-Downloads the latest release binary to `/opt/saltbox-ui`, installs a systemd
-service, and starts it on `:8000`. Open the UI and run the setup wizard.
+Binary → `/opt/saltbox-ui`, raw systemd unit, listens on `:8000`. No Traefik /
+SSO / DNS. Open `http://host:8000` and run the setup wizard.
 
 ```bash
 journalctl -u sb-ui -f      # logs
 systemctl status sb-ui      # status
 ```
+
+### B. Saltbox-native (mod role) — recommended on a Saltbox host
+
+Installs sb-ui as a [saltbox_mod](https://github.com/saltyorg/saltbox_mod) role
+(modelled on the autoplow role): binary → `/srv/binaries/sbui`, with a Traefik
+subdomain + Authelia SSO + DNS + `saltbox_managed_sbui` systemd unit. Run as
+**your Saltbox user** (not root):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/totza2010/sb-ui/master/bootstrap-mod.sh | bash
+```
+
+It ensures `saltbox_mod` is installed, drops the versioned role tarball into
+`/opt/saltbox_mod/roles/sbui`, registers it in `saltbox_mod.yml`, and runs
+`sb install mod-sbui`. Reachable at `https://sbui.<your-domain>`.
+
+### Updating
+
+- **In-UI** — the sidebar shows an "Update to vX.Y.Z" button when a newer
+  release exists; it swaps the binary in place and restarts (works for both A
+  and B).
+- **`sb install mod-sbui`** (path B) — re-pulls the latest binary and re-applies
+  Traefik/DNS/systemd.
+- **Re-run `bootstrap-mod.sh`** (path B) — when the *role itself* changes
+  (tasks/defaults), to fetch the new role tarball, then `sb install mod-sbui`.
 
 ## Build
 
@@ -60,7 +89,8 @@ npm run dev        # Vite dev server (proxy /api → running sb-ui)
 ## Release
 
 Tag `vX.Y.Z` (or run the workflow manually) to build + publish the linux
-amd64/arm64 binaries + checksums. CI: `.github/workflows/release.yml`.
+amd64/arm64 binaries, the `sb-ui-role.tar.gz` mod role, and checksums.
+CI: `.github/workflows/release.yml`.
 
 ## Layout
 
@@ -70,6 +100,8 @@ internal/…         # Go port of the backend (executor, jobs, apps, …)
 frontend/          # React source (Vite); dev here
 web/               # embedded frontend build (generated; gitignored)
 build.sh           # frontend build + copy + versioned go build
-install.sh         # one-liner host installer (binary + systemd)
-sb-ui.service      # systemd unit template
+install.sh         # standalone host installer (binary + systemd)
+bootstrap-mod.sh   # Saltbox-native installer (saltbox_mod role)
+sb-ui.service      # standalone systemd unit template
+deploy/saltbox_mod/roles/sbui/   # the mod role (autoplow-style), shipped as sb-ui-role.tar.gz
 ```

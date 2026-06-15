@@ -2,17 +2,17 @@
 # sb-ui installer — downloads the latest release binary, installs it under
 # /opt/saltbox-ui, and sets up a systemd service.
 #
-#   curl -fsSL https://raw.githubusercontent.com/saltyorg/saltbox/master/sb-ui/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/totza2010/sb-ui/master/install.sh | sudo bash
 #
 # Env overrides:
-#   SB_UI_REPO    GitHub repo (default saltyorg/saltbox)
+#   SB_UI_REPO    GitHub repo (default totza2010/sb-ui)
 #   SB_UI_VERSION release tag (default: latest)
 #   SB_UI_DIR     install dir   (default /opt/saltbox-ui)
 #   SB_UI_ADDR    listen addr   (default :8000)
 #   SB_UI_USER    service user  (default: the owner of SB_UI_DIR, else current sudo user)
 set -euo pipefail
 
-REPO="${SB_UI_REPO:-saltyorg/saltbox}"
+REPO="${SB_UI_REPO:-totza2010/sb-ui}"
 VERSION="${SB_UI_VERSION:-latest}"
 DIR="${SB_UI_DIR:-/opt/saltbox-ui}"
 ADDR="${SB_UI_ADDR:-:8000}"

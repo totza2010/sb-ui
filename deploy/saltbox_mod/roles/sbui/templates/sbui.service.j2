@@ -1,0 +1,28 @@
+# /etc/systemd/system/{{ sbui_service_name }}.service
+#########################################################################
+# Title:         Saltbox mod: sb-ui Service                             #
+# URL:           https://github.com/totza2010/sb-ui                     #
+#########################################################################
+
+[Unit]
+Description=sb-ui (Saltbox web UI)
+After=network-online.target docker.service
+Wants=network-online.target
+StartLimitIntervalSec=500s
+StartLimitBurst=5
+
+[Service]
+User={{ user.name }}
+Group={{ user.name }}
+Type=simple
+WorkingDirectory={{ sbui_data_path }}/
+# Run on the host in local mode (sb-ui talks to the local Docker/ansible).
+Environment=SB_UI_ADDR=:{{ sbui_role_web_port }}
+Environment=SALTBOX_CONFIGURED=true
+EnvironmentFile=-{{ sbui_data_path }}/.env
+ExecStart={{ sbui_binary_path }}
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,26 @@
+http:
+  routers:
+    {{ sbui_name }}-http:
+      entryPoints:
+        - "web"
+      rule: "{{ traefik_host_template }}"
+      middlewares:
+        {{ traefik_default_middleware_http.split(',') | to_nice_yaml | trim | indent(8) }}
+      service: "{{ sbui_name }}"
+
+    {{ sbui_name }}:
+      entryPoints:
+        - "websecure"
+      rule: "{{ traefik_host_template }}"
+      middlewares:
+        {{ traefik_middleware.split(',') | to_nice_yaml | trim | indent(8) }}
+      service: "{{ sbui_name }}"
+      tls:
+        options: securetls@file
+        certResolver: {{ lookup('role_var', '_traefik_certresolver', role='sbui') }}
+
+  services:
+    {{ sbui_name }}:
+      loadBalancer:
+        servers:
+          - url: "http://172.19.0.1:{{ lookup('role_var', '_web_port', role='sbui') }}"

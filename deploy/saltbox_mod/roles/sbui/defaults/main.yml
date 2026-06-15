@@ -1,0 +1,69 @@
+##########################################################################
+# Title:         Saltbox mod: sb-ui | Default Variables                  #
+# URL:           https://github.com/totza2010/sb-ui                      #
+# --                                                                     #
+# Binary app (Go single binary), modelled on the Saltbox autoplow role:  #
+# pull releases/latest -> /srv/binaries -> Traefik file provider +       #
+# systemd. Role/tag is "sbui" (no hyphen — role_var needs a valid var    #
+# prefix); the release asset is still sb-ui-linux-<arch>.                #
+##########################################################################
+---
+################################
+# Basics
+################################
+
+sbui_name: sbui
+
+################################
+# Paths
+################################
+
+sbui_path: "/srv/binaries/sbui"
+sbui_binary_path: "{{ sbui_path }}/sb-ui"
+sbui_data_path: "/opt/saltbox-ui"
+sbui_role_paths_folders_list:
+  - "/srv/binaries"
+  - "{{ sbui_path }}"
+  - "{{ sbui_data_path }}"
+
+################################
+# Web
+################################
+
+sbui_role_web_subdomain: "{{ sbui_name }}"
+sbui_role_web_domain: "{{ user.domain }}"
+sbui_role_web_port: "{{ sbui_port_lookup.meta.port }}"
+
+################################
+# GitHub
+################################
+
+sbui_repo: "totza2010/sb-ui"
+sbui_latest_releases_url: "https://api.github.com/repos/{{ sbui_repo }}/releases/latest"
+sbui_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+sbui_asset_name: "sb-ui-linux-{{ sbui_arch }}"
+
+################################
+# Systemd
+################################
+
+sbui_service_name: "saltbox_managed_{{ sbui_name }}"
+
+################################
+# DNS
+################################
+
+sbui_role_dns_record: "{{ sbui_role_web_subdomain }}"
+sbui_role_dns_zone: "{{ sbui_role_web_domain }}"
+sbui_role_dns_proxy: "{{ dns.proxied }}"
+
+################################
+# Traefik
+################################
+
+sbui_role_traefik_sso_middleware: "{{ traefik_default_sso_middleware }}"
+sbui_role_traefik_middleware_default: "{{ traefik_default_middleware }}"
+sbui_role_traefik_certresolver: "{{ traefik_default_certresolver }}"
+sbui_role_traefik_enabled: true
+sbui_role_traefik_api_enabled: false
+sbui_role_traefik_api_endpoint: ""
