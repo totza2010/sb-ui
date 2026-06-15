@@ -104,6 +104,25 @@ export const useSystem = () =>
 export const useContainers = () =>
   useQuery<ContainerInfo[]>({ queryKey: ['containers'], queryFn: () => request('/containers'), refetchInterval: 10000 })
 
+export interface ContainerInspect {
+  created: string; restart: string; env: string[]; networks: string[]
+  mounts: { source: string; destination: string; type: string; rw: boolean }[]
+}
+export const useContainerInspect = (name: string | null) =>
+  useQuery<ContainerInspect>({
+    queryKey: ['inspect', name],
+    queryFn: () => request(`/containers/${encodeURIComponent(name!)}/inspect`),
+    enabled: !!name,
+  })
+
+export interface ContainerStat { name: string; cpu: string; mem: string; mem_pct: string; net: string; block: string }
+export const useContainerStats = () =>
+  useQuery<Record<string, ContainerStat>>({
+    queryKey: ['container-stats'],
+    queryFn: () => request('/containers/stats'),
+    refetchInterval: 5000,
+  })
+
 export interface MountInfo { target: string; kind: string; ok: boolean; detail: string }
 export interface StatusItem { ok: boolean; label: string; detail?: string; list?: MountInfo[] }
 export interface SystemStatusData { connection: StatusItem; mounts: StatusItem; docker: StatusItem }

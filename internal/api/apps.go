@@ -30,6 +30,24 @@ func listContainers(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, docker.ListContainers())
 }
 
+func containerStats(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, docker.Stats())
+}
+
+func containerInspect(w http.ResponseWriter, req *http.Request) {
+	name := chi.URLParam(req, "name")
+	if strings.ContainsAny(name, "/.") {
+		http.Error(w, "Invalid name", http.StatusBadRequest)
+		return
+	}
+	ins := docker.InspectContainer(name)
+	if ins == nil {
+		http.Error(w, "Container not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, ins)
+}
+
 func saltboxVersion(w http.ResponseWriter, _ *http.Request) {
 	out := apps.SaltboxVersion()
 	for k, v := range apps.UpdateAvailable() {
