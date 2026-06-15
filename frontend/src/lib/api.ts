@@ -128,7 +128,7 @@ export const useMounts = () =>
     refetchInterval: 30000,
   })
 
-export interface RemoteInfo { name: string; ok: boolean; used?: string; total?: string }
+export interface RemoteInfo { name: string; type: string; ok: boolean; used?: string; total?: string }
 export interface StorageData { remotes: RemoteInfo[]; local: MountDetail | null }
 
 export const useStorage = () =>

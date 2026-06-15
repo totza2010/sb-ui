@@ -12,9 +12,11 @@ import (
 	"sb-ui/internal/executor"
 )
 
-// remoteInfo is one rclone remote checked directly via `rclone about`.
+// remoteInfo is one rclone remote (with its backend type) checked directly via
+// `rclone about`.
 type remoteInfo struct {
 	Name  string `json:"name"`
+	Type  string `json:"type"`
 	OK    bool   `json:"ok"`
 	Used  string `json:"used,omitempty"`
 	Total string `json:"total,omitempty"`
@@ -55,10 +57,11 @@ func cloudRemotes(ctx context.Context) []remoteInfo {
 
 	e := executor.Get()
 	conf := rcloneConfPath()
-	// One `rclone about` per remote, in parallel, each guarded by `timeout`.
-	probe := `conf=` + shArg(conf) + `; rclone --config "$conf" listremotes 2>/dev/null | ` +
-		`while read -r r; do ( j=$(timeout 8 rclone --config "$conf" about "$r" --json 2>/dev/null); ` +
-		`if [ -n "$j" ]; then echo "$r|ok|$j"; else echo "$r|down|"; fi ) & done; wait`
+	// `listremotes --long` gives "name: type"; one `rclone about` per remote in
+	// parallel, each guarded by `timeout`.
+	probe := `conf=` + shArg(conf) + `; rclone --config "$conf" listremotes --long 2>/dev/null | ` +
+		`while read -r name typ; do ( j=$(timeout 8 rclone --config "$conf" about "$name" --json 2>/dev/null); ` +
+		`if [ -n "$j" ]; then echo "$name|$typ|ok|$j"; else echo "$name|$typ|down|"; fi ) & done; wait`
 
 	rc, out, _ := e.Run(ctx, []string{"sh", "-c", probe}, "")
 	list := []remoteInfo{}
@@ -67,17 +70,17 @@ func cloudRemotes(ctx context.Context) []remoteInfo {
 			if l = strings.TrimSpace(l); l == "" {
 				continue
 			}
-			p := strings.SplitN(l, "|", 3)
-			if len(p) < 2 {
+			p := strings.SplitN(l, "|", 4)
+			if len(p) < 3 {
 				continue
 			}
-			r := remoteInfo{Name: strings.TrimSuffix(p[0], ":"), OK: p[1] == "ok"}
-			if len(p) == 3 && p[2] != "" {
+			r := remoteInfo{Name: strings.TrimSuffix(p[0], ":"), Type: strings.TrimSpace(p[1]), OK: p[2] == "ok"}
+			if len(p) == 4 && p[3] != "" {
 				var a struct {
 					Total int64 `json:"total"`
 					Used  int64 `json:"used"`
 				}
-				if json.Unmarshal([]byte(p[2]), &a) == nil {
+				if json.Unmarshal([]byte(p[3]), &a) == nil {
 					if a.Used > 0 {
 						r.Used = humanBytes(a.Used)
 					}
