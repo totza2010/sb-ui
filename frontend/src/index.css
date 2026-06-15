@@ -48,3 +48,17 @@ body {
 .card-shadow {
   box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
 }
+
+/* React Flow disables pointer-events on non-interactive nodes (so you can pan
+   over them) — that also kills hover. Re-enable so row tooltips work. */
+.react-flow__node { pointer-events: all !important; }
+
+/* StorageFlow edit mode: reveal connection handles so edges can be drawn,
+   re-routed (drag an endpoint) and deleted. Hidden otherwise. */
+.sf-edit .react-flow__handle {
+  opacity: 1 !important;
+  width: 9px;
+  height: 9px;
+  background: var(--color-primary);
+  border: 1.5px solid var(--color-card);
+}

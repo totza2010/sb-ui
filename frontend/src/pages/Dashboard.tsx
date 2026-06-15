@@ -71,7 +71,7 @@ export function Dashboard() {
       {/* Storage flow */}
       <div>
         <h2 className="text-sm font-medium text-muted-foreground mb-3">Storage</h2>
-        <div className="overflow-x-auto pb-1">
+        <div className="h-[600px] rounded-lg border border-border bg-card/30">
           <StorageFlow />
         </div>
       </div>
