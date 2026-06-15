@@ -21,7 +21,19 @@ $vite = Start-Process -PassThru -FilePath 'powershell' `
 
 try {
   Write-Host "==> air (Go backend, hot-reload) on :8000 — open http://localhost:5173" -ForegroundColor Cyan
-  & $air
+  Write-Host "    (Ctrl-C or close this window to stop everything)" -ForegroundColor DarkGray
+  # Watchdog: if air exits on its own (crash), relaunch it so you don't have to
+  # re-run dev.ps1. Ctrl-C terminates the script (-> finally), not the loop.
+  while ($true) {
+    $start = Get-Date
+    & $air
+    if (((Get-Date) - $start).TotalSeconds -lt 3) {
+      Write-Host "air exited immediately — stopping. Fix the issue, then re-run dev.ps1." -ForegroundColor Yellow
+      break
+    }
+    Write-Host "`n==> air exited — restarting..." -ForegroundColor Yellow
+    Start-Sleep 1
+  }
 } finally {
   Write-Host "`n==> stopping Vite..." -ForegroundColor Cyan
   Stop-Process -Id $vite.Id -Force -ErrorAction SilentlyContinue
