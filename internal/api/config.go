@@ -90,8 +90,22 @@ func getAppdata(w http.ResponseWriter, req *http.Request) {
 
 // ── rclone ───────────────────────────────────────────────────────────────────
 
+// saltboxUser is the account Saltbox runs apps under (accounts.yml → user.name).
+// rclone.conf lives in that user's home, not the SSH/connection user (which in
+// local mode defaults to "seed"). Mirrors Saltbox's rclone_config_path.
+func saltboxUser() string {
+	if m, err := configfiles.Read("accounts"); err == nil {
+		if u, ok := m["user"].(map[string]any); ok {
+			if name, ok := u["name"].(string); ok && name != "" {
+				return name
+			}
+		}
+	}
+	return config.Get().User
+}
+
 func rcloneConfPath() string {
-	return "/home/" + config.Get().User + "/.config/rclone/rclone.conf"
+	return "/home/" + saltboxUser() + "/.config/rclone/rclone.conf"
 }
 
 func rcloneRemotes(w http.ResponseWriter, _ *http.Request) {
