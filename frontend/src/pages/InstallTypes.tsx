@@ -30,7 +30,7 @@ function sameList(a: string[], b: string[]) {
   return a.length === b.length && a.every((x, i) => x === b[i])
 }
 
-export function InstallTypes() {
+export function InstallTypes({ embedded = false }: { embedded?: boolean }) {
   const { data, isLoading } = useInstallTypes()
   const save = useSaveInstallTypes()
   const install = useInstallApp()
@@ -77,10 +77,10 @@ export function InstallTypes() {
   }
 
   return (
-    <div className="p-6 space-y-5 max-w-4xl">
+    <div className={cn('space-y-5 max-w-4xl', !embedded && 'p-6')}>
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-foreground">Install types</h1>
+          {!embedded && <h1 className="text-xl font-semibold text-foreground">Install types</h1>}
           <p className="text-sm text-muted-foreground mt-0.5">
             Customise which roles each profile installs. Saved to the inventory; defaults shown when not overridden.
           </p>

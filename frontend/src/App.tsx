@@ -11,7 +11,6 @@ import { SetupWizard } from '@/pages/SetupWizard'
 import { JobsLogs } from '@/pages/JobsLogs'
 import { Inventory } from '@/pages/Inventory'
 import { Backup } from '@/pages/Backup'
-import { InstallTypes } from '@/pages/InstallTypes'
 import { Files } from '@/pages/Files'
 import { ConnectionSetup } from '@/pages/ConnectionSetup'
 import { BackendOffline } from '@/components/BackendOffline'
@@ -61,7 +60,6 @@ function AppInner() {
             <Route path="/roles"  element={<RoleBuilder />} />
             <Route path="/setup"  element={<SetupWizard />} />
             <Route path="/inventory" element={<Inventory />} />
-            <Route path="/install-types" element={<InstallTypes />} />
             <Route path="/backup" element={<Backup />} />
             <Route path="/files" element={<Files />} />
             <Route path="/logs"   element={<JobsLogs />} />

@@ -21,9 +21,10 @@ import { RoleConfigModal } from '@/components/RoleConfigModal'
 import { AppDetail } from '@/components/AppDetail'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/cn'
+import { InstallTypes } from '@/pages/InstallTypes'
 
 type Filter = 'all' | 'saltbox' | 'sandbox' | 'outdated'
-type Mode = 'installed' | 'add'
+type Mode = 'installed' | 'add' | 'install-types'
 
 function statusBadge(app: AppInfo) {
   if (!app.installed) return null
@@ -748,7 +749,7 @@ export function AppManager() {
 
       {/* Mode toggle: installed apps vs add-app catalog */}
       <div className="flex items-center gap-2 border-b border-border">
-        {([['installed', `Installed (${installedCount})`], ['add', `Add app (${availableCount})`]] as const).map(([m, label]) => (
+        {([['installed', `Installed (${installedCount})`], ['add', `Add app (${availableCount})`], ['install-types', 'Install types']] as const).map(([m, label]) => (
           <button key={m} onClick={() => setMode(m)}
             className={cn('px-3 py-2 text-sm border-b-2 -mb-px transition-colors',
               mode === m ? 'border-primary text-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground')}>
@@ -758,21 +759,25 @@ export function AppManager() {
       </div>
 
       {/* Search + (add-mode) repo filters */}
-      <div className="flex gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-52">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input className="pl-8" placeholder="Search apps…"
-            value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-        {mode === 'add' && (
-          <div className="flex gap-1.5 flex-wrap">
-            {filterBtns.map(({ key, label }) => (
-              <Button key={key} size="sm" variant={filter === key ? 'default' : 'outline'}
-                onClick={() => setFilter(key)}>{label}</Button>
-            ))}
+      {mode !== 'install-types' && (
+        <div className="flex gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-52">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input className="pl-8" placeholder="Search apps…"
+              value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
-        )}
-      </div>
+          {mode === 'add' && (
+            <div className="flex gap-1.5 flex-wrap">
+              {filterBtns.map(({ key, label }) => (
+                <Button key={key} size="sm" variant={filter === key ? 'default' : 'outline'}
+                  onClick={() => setFilter(key)}>{label}</Button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === 'install-types' && <InstallTypes embedded />}
 
       {isLoading && <p className="text-muted-foreground text-sm">Loading apps…</p>}
 
@@ -824,7 +829,7 @@ export function AppManager() {
             </section>
           ))}
         </div>
-      ) : (
+      ) : mode === 'add' ? (
         <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
           {addApps.map((app) => (
             <AppCard key={app.tag} app={app} onAction={handleAction}
@@ -832,7 +837,7 @@ export function AppManager() {
               onInstanceAction={handleInstanceAction} />
           ))}
         </div>
-      )}
+      ) : null}
 
       {/* Auto-refetch update-status when a check-updates job finishes */}
       {activeAction === 'check-updates' && (
