@@ -1,0 +1,14 @@
+/sb-ui
+/sb-ui.exe
+/dist/
+
+# Local config (contains host + credentials; written by the setup wizard).
+/.env
+
+# Frontend source (in-repo); ignore deps + build output.
+/frontend/node_modules/
+/frontend/dist/
+
+# Embedded frontend: generated from frontend/ by build.sh.
+/web/*
+!/web/.gitkeep

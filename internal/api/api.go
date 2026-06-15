@@ -1,0 +1,164 @@
+// Package api wires the HTTP + WebSocket routes. It mirrors the Python backend's
+// API contract so the React frontend works unchanged.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"sb-ui/internal/ansible"
+	"sb-ui/internal/buildinfo"
+	"sb-ui/internal/jobs"
+)
+
+// Mount registers the API + WS routes on r. Static frontend / SPA fallback is
+// handled by the caller's NotFound handler.
+func Mount(r chi.Router) {
+	r.Get("/api/health", health)
+
+	// Setup wizard / connection
+	r.Get("/api/setup/status", setupStatus)
+	r.Post("/api/setup/test", setupTest)
+	r.Post("/api/setup/save", setupSave)
+
+	r.Get("/api/jobs", listJobs)
+	r.Get("/api/jobs/{id}", getJob)
+
+	// System dashboard
+	r.Get("/api/system", systemInfo)
+	r.Get("/api/containers", listContainers)
+
+	// Apps + status
+	r.Get("/api/apps", listApps)
+	r.Get("/api/apps/saltbox-version", saltboxVersion)
+	r.Get("/api/apps/update-status", updateStatus)
+	r.Get("/api/apps/update-meta", updateMeta)
+	r.Get("/api/apps/{tag}/image-info", imageInfo)
+	r.Get("/api/apps/{tag}/logs", appLogs)
+	r.Get("/api/apps/{tag}/opt", appOpt)
+	r.Get("/api/categories", listCategories)
+	r.Post("/api/apps/check-updates", checkUpdates)
+
+	// App actions
+	r.Post("/api/apps/install-set", installSet)
+	r.Post("/api/apps/{tag}/install", installApp("install"))
+	r.Post("/api/apps/{tag}/reinstall", installApp("reinstall"))
+	r.Post("/api/apps/{tag}/pull", pullApp)
+	r.Post("/api/apps/{tag}/remove", removeApp)
+
+	// Container / service lifecycle
+	r.Post("/api/containers/{name}/{action}", containerAction)
+	r.Post("/api/services/{name}/{action}", serviceAction)
+
+	// Config files
+	r.Get("/api/config/{filename}", getConfig)
+	r.Put("/api/config/{filename}", putConfig)
+	r.Post("/api/config/{filename}/apply", applyConfig)
+
+	// Inventory + appdata
+	r.Get("/api/inventory", getInventory)
+	r.Put("/api/inventory", putInventory)
+	r.Get("/api/inventory/catalog", getCatalog)
+	r.Get("/api/apps/{tag}/appdata", getAppdata)
+
+	// rclone
+	r.Get("/api/rclone/remotes", rcloneRemotes)
+	r.Get("/api/rclone/status", rcloneStatus)
+	r.Get("/api/rclone/logs", rcloneLogs)
+	r.Get("/api/rclone/mount-templates", mountTemplates)
+
+	// Filesystem browse + edit (/fs/read|write are aliases of /fs/file)
+	r.Get("/api/fs", fsList)
+	r.Get("/api/fs/file", fsReadFile)
+	r.Put("/api/fs/file", fsWriteFile)
+	r.Get("/api/fs/read", fsReadFile)
+	r.Put("/api/fs/write", fsWriteFile)
+
+	// Bundles / install types / custom sets
+	r.Get("/api/bundles", listBundles)
+	r.Get("/api/install-types", getInstallTypes)
+	r.Put("/api/install-types", putInstallTypes)
+	r.Get("/api/custom-sets", getCustomSets)
+	r.Put("/api/custom-sets", putCustomSet)
+	r.Delete("/api/custom-sets/{id}", deleteCustomSet)
+
+	// Saltbox update + patches
+	r.Post("/api/apps/saltbox-update", saltboxUpdate)
+	r.Post("/api/apps/apply-patches", applyPatches)
+
+	// Role Builder
+	r.Post("/api/roles/preview", rolePreview)
+	r.Post("/api/roles/commit", roleCommit)
+
+	// Role file editor + patches
+	r.Get("/api/roles/{role}/files", roleFiles)
+	r.Get("/api/roles/{role}/file", roleReadFile)
+	r.Put("/api/roles/{role}/file", roleWriteFile)
+	r.Get("/api/roles/{role}/patches", rolePatches)
+	r.Get("/api/roles/{role}/patch", rolePatch)
+	r.Post("/api/roles/{role}/patches/rebuild", rolePatchRebuild)
+	r.Get("/api/roles/{role}/patches/rebuild-preview", rolePatchPreview)
+
+	// WebSocket log stream
+	r.Get("/ws/jobs/{id}", jobWS)
+}
+
+func health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "backend": "go", "version": buildinfo.Version})
+}
+
+func listJobs(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, jobs.ListDicts())
+}
+
+func getJob(w http.ResponseWriter, req *http.Request) {
+	d, ok := jobs.JobDict(chi.URLParam(req, "id"))
+	if !ok {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
+}
+
+func installApp(action string) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		tag := chi.URLParam(req, "tag")
+		j := jobs.Create(tag, action)
+		go ansible.RunPlaybook(context.Background(), j.ID, tag)
+		writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
+	}
+}
+
+func installSet(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Tags []string `json:"tags"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+	if len(body.Tags) == 0 {
+		http.Error(w, "No tags provided", http.StatusBadRequest)
+		return
+	}
+	j := jobs.Create(joinTags(body.Tags), "install-set")
+	go ansible.RunMulti(context.Background(), j.ID, body.Tags)
+	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
+}
+
+func joinTags(tags []string) string {
+	out := ""
+	for i, t := range tags {
+		if i > 0 {
+			out += ","
+		}
+		out += t
+	}
+	return out
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}

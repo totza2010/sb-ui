@@ -1,0 +1,26 @@
+[Unit]
+Description=Saltbox web UI (sb-ui)
+Documentation=https://github.com/saltyorg/saltbox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the Saltbox user so SSH keys / repo paths resolve the same way the
+# Python backend did. install.sh substitutes the detected user.
+User=__SB_USER__
+Group=__SB_USER__
+WorkingDirectory=/opt/saltbox-ui
+EnvironmentFile=-/opt/saltbox-ui/.env
+Environment=SB_UI_ADDR=:8000
+ExecStart=/opt/saltbox-ui/sb-ui
+Restart=on-failure
+RestartSec=5
+# Hardening (relaxed enough to read SSH keys + write /opt/saltbox-ui).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelTunables=true
+
+[Install]
+WantedBy=multi-user.target

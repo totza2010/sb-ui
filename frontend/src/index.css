@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── Light theme ───────────────────────────────────────────── */
+  --color-background:           hsl(0 0% 97%);
+  --color-foreground:           hsl(222 25% 12%);
+
+  --color-card:                 hsl(0 0% 100%);
+  --color-card-foreground:      hsl(222 25% 12%);
+
+  --color-popover:              hsl(0 0% 100%);
+  --color-popover-foreground:   hsl(222 25% 12%);
+
+  --color-primary:              hsl(217 91% 50%);
+  --color-primary-foreground:   hsl(0 0% 100%);
+
+  --color-secondary:            hsl(217 20% 92%);
+  --color-secondary-foreground: hsl(222 25% 20%);
+
+  --color-muted:                hsl(220 14% 94%);
+  --color-muted-foreground:     hsl(220 10% 46%);
+
+  --color-accent:               hsl(217 20% 92%);
+  --color-accent-foreground:    hsl(222 25% 20%);
+
+  --color-destructive:          hsl(0 72% 51%);
+  --color-destructive-foreground: hsl(0 0% 100%);
+
+  --color-border:               hsl(220 13% 88%);
+  --color-input:                hsl(220 13% 88%);
+  --color-ring:                 hsl(217 91% 50%);
+
+  --color-success:              hsl(142 65% 40%);
+  --color-warning:              hsl(38 92% 50%);
+
+  --radius: 0.5rem;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* give cards a subtle lift */
+.card-shadow {
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
+}

@@ -1,0 +1,11 @@
+# Normalize text to LF in the repo (matters for shell scripts on Linux).
+* text=auto eol=lf
+
+# Always LF — these run on the Linux target.
+*.sh text eol=lf
+*.service text eol=lf
+
+# Treat the embedded build output / binaries as binary.
+*.png binary
+*.jpg binary
+*.svg text
