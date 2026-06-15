@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/reac
 import { Sidebar } from '@/components/layout/Sidebar'
 import { Dashboard } from '@/pages/Dashboard'
 import { AppManager } from '@/pages/AppManager'
+import { Containers } from '@/pages/Containers'
 import { ConfigEditor } from '@/pages/ConfigEditor'
 import { RoleBuilder } from '@/pages/RoleBuilder'
 import { SetupWizard } from '@/pages/SetupWizard'
@@ -55,6 +56,7 @@ function AppInner() {
           <Routes>
             <Route path="/"       element={<Dashboard />} />
             <Route path="/apps"   element={<AppManager />} />
+            <Route path="/containers" element={<Containers />} />
             <Route path="/config" element={<ConfigEditor />} />
             <Route path="/roles"  element={<RoleBuilder />} />
             <Route path="/setup"  element={<SetupWizard />} />
