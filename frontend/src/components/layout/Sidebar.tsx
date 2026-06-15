@@ -4,6 +4,7 @@ import { LayoutDashboard, Package, Settings, Wrench, Wand2, Activity, PlugZap, L
 import { cn } from '@/lib/cn'
 import { useSetupStatus } from '@/lib/api'
 import { SelfUpdate } from '@/components/SelfUpdate'
+import { SystemStatus } from '@/components/SystemStatus'
 
 const nav = [
   { to: '/',         label: 'Dashboard',    icon: LayoutDashboard },
@@ -60,6 +61,11 @@ export function Sidebar() {
           </NavLink>
         ))}
       </nav>
+
+      {/* System status — visible on every page */}
+      <div className="px-4 py-3 border-t border-border">
+        <SystemStatus />
+      </div>
 
       {/* Footer */}
       <div className="px-4 py-3 border-t border-border space-y-2">

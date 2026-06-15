@@ -103,6 +103,18 @@ export const useSystem = () =>
 export const useContainers = () =>
   useQuery<ContainerInfo[]>({ queryKey: ['containers'], queryFn: () => request('/containers'), refetchInterval: 10000 })
 
+export interface MountInfo { target: string; kind: string; ok: boolean; detail: string }
+export interface StatusItem { ok: boolean; label: string; detail?: string; list?: MountInfo[] }
+export interface SystemStatusData { connection: StatusItem; mounts: StatusItem; docker: StatusItem }
+
+export const useStatus = () =>
+  useQuery<SystemStatusData>({
+    queryKey: ['status'],
+    queryFn: () => request('/status'),
+    refetchInterval: 20000,
+    staleTime: 10000,
+  })
+
 export const useApps = () =>
   useQuery<AppInfo[]>({ queryKey: ['apps'], queryFn: () => request('/apps'), refetchInterval: 30000 })
 

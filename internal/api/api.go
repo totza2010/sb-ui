@@ -34,6 +34,7 @@ func Mount(r chi.Router) {
 	// System dashboard
 	r.Get("/api/system", systemInfo)
 	r.Get("/api/containers", listContainers)
+	r.Get("/api/status", systemStatus)
 
 	// Apps + status
 	r.Get("/api/apps", listApps)
