@@ -54,7 +54,7 @@ jobs:
         run: |
           mkdir -p dist
           for arch in amd64 arm64; do
-            OUT="dist/sb-ui-linux-$arch" SKIP_WEB=1 ./build.sh linux "$arch"
+            OUT="dist/sb-ui-linux-$arch" SKIP_WEB=1 bash ./build.sh linux "$arch"
           done
           ( cd dist && sha256sum sb-ui-linux-* > checksums.txt )
 
