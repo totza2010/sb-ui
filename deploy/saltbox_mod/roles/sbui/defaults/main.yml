@@ -40,7 +40,8 @@ sbui_role_web_port: "{{ sbui_port_lookup.meta.port }}"
 
 sbui_repo: "totza2010/sb-ui"
 sbui_latest_releases_url: "https://api.github.com/repos/{{ sbui_repo }}/releases/latest"
-sbui_arch: "{{ 'arm64' if ansible_architecture in ['aarch64', 'arm64'] else 'amd64' }}"
+# saltbox_mod sets inject_facts_as_vars=False, so use ansible_facts (not ansible_architecture).
+sbui_arch: "{{ 'arm64' if ansible_facts['architecture'] in ['aarch64', 'arm64'] else 'amd64' }}"
 sbui_asset_name: "sb-ui-linux-{{ sbui_arch }}"
 
 ################################
