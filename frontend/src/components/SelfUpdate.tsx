@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { ArrowUpCircle, Loader2 } from 'lucide-react'
 import { useSelfVersion, useSelfUpdate } from '@/lib/api'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -6,16 +6,39 @@ import { LogStream } from '@/components/LogStream'
 
 // Shows the running sb-ui version and, when a newer GitHub release exists, an
 // in-place update button. The update streams a job; the backend re-execs into
-// the new binary, so the WS drops and reconnects to the new version.
+// the new binary, so the WS drops — then we detect the new version and reload.
 export function SelfUpdate() {
   const { data, refetch } = useSelfVersion()
   const update = useSelfUpdate()
   const [jobId, setJobId] = useState<string | null>(null)
+  const prevVersion = useRef<string | null>(null)
 
   const start = async () => {
+    prevVersion.current = data?.current ?? null
     const { job_id } = await update.mutateAsync()
     setJobId(job_id)
   }
+
+  // Once the update is running, poll the version endpoint. The backend briefly
+  // goes away while it re-execs; when it answers again with a different version
+  // the swap succeeded, so reload the page into the new UI automatically.
+  useEffect(() => {
+    if (!jobId || !prevVersion.current) return
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch('/api/self/version', { cache: 'no-store' })
+        if (!r.ok) return
+        const v = await r.json()
+        if (v.current && v.current !== prevVersion.current) {
+          clearInterval(t)
+          window.location.reload()
+        }
+      } catch {
+        /* backend down mid-restart — keep polling */
+      }
+    }, 1500)
+    return () => clearInterval(t)
+  }, [jobId])
 
   if (!data) return <p className="text-xs text-muted-foreground/60">sb-ui …</p>
 

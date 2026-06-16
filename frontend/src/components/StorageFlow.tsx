@@ -6,8 +6,8 @@ import {
   type Node, type Edge, type NodeProps, type EdgeProps, type InternalNode, type Connection, type XYPosition,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Link2, Unlink, Pencil, Check, Plus, RotateCcw } from 'lucide-react'
-import { useMounts, useStorage, useContainers, type ContainerInfo, type RemoteInfo, type MountDetail } from '@/lib/api'
+import { Link2, Unlink, Pencil, Check, Plus, RotateCcw, Loader2 } from 'lucide-react'
+import { useMounts, useStorage, useContainers, useRcloneRemotes, type ContainerInfo, type RemoteInfo, type MountDetail } from '@/lib/api'
 import { cn } from '@/lib/cn'
 
 // `always`: keep this slot visible even with no matching container (e.g. cloudplow
@@ -177,20 +177,30 @@ function RemoteNode({ data }: NodeProps<Node<{ remotes: MountDetail[] }>>) {
   )
 }
 
-type CloundsData = { byType: Record<string, RemoteInfo[]>; mounted: Set<string>; mountPath: Record<string, string> }
+type CRemote = { name: string; type: string; ok: boolean; pending: boolean }
+type CloundsData = { byType: Record<string, CRemote[]>; mounted: Set<string>; mountPath: Record<string, string> }
 function CloundsNode({ data }: NodeProps<Node<CloundsData>>) {
   const tip = useTipProps()
+  const types = Object.entries(data.byType)
   return (
     <div className="rounded-lg border-2 border-border bg-card p-2 space-y-2 w-[190px] cursor-default">
       <div className="text-xs font-semibold text-foreground">Clounds</div>
-      {Object.entries(data.byType).map(([type, rs]) => (
+      {types.length === 0 && (
+        <div className="rounded-md border border-border bg-secondary/50 p-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Loader2 className="h-3 w-3 animate-spin shrink-0" />Checking remotes…
+        </div>
+      )}
+      {types.map(([type, rs]) => (
         <div key={type} className="rounded-md border border-border bg-secondary/50 p-1.5">
           <div className="text-[11px] font-medium text-foreground mb-1">{type} <span className="text-muted-foreground">×{rs.length}</span></div>
           <div className="space-y-0.5">
             {rs.map((r) => (
               <div key={r.name} className="flex items-center gap-1.5 cursor-help"
-                {...tip(`${r.name} · ${r.type} · ${data.mounted.has(r.name) ? 'mounted: ' + data.mountPath[r.name] : 'not mounted'}`)}>
-                <Dot ok={r.ok} /><span className="font-mono text-[11px] text-foreground">{r.name}</span>
+                {...tip(`${r.name} · ${r.type} · ${r.pending ? 'checking…' : r.ok ? 'reachable' : 'unreachable'} · ${data.mounted.has(r.name) ? 'mounted: ' + data.mountPath[r.name] : 'not mounted'}`)}>
+                {r.pending
+                  ? <Loader2 className="h-3 w-3 animate-spin text-muted-foreground shrink-0" />
+                  : <Dot ok={r.ok} />}
+                <span className="font-mono text-[11px] text-foreground">{r.name}</span>
                 {data.mounted.has(r.name) ? <Link2 className="h-3 w-3 text-success shrink-0" /> : <Unlink className="h-3 w-3 text-muted-foreground/40 shrink-0" />}
               </div>
             ))}
@@ -293,6 +303,7 @@ export function StorageFlow() {
   const { data: storage } = useStorage()
   const { data: mounts } = useMounts()
   const { data: containers } = useContainers()
+  const { data: rconf } = useRcloneRemotes() // fast: remote names + types from rclone.conf
 
   const cs = containers ?? []
   const list = mounts ?? []
@@ -301,8 +312,17 @@ export function StorageFlow() {
   const remotes = storage?.remotes ?? []
 
   const dataNodes = useMemo<Node[]>(() => {
-    const byType: Record<string, RemoteInfo[]> = {}
-    for (const r of remotes) (byType[r.type || 'other'] ??= []).push(r)
+    // Remote list comes from rclone.conf (fast) so the box renders full-size
+    // immediately; per-remote reachability is merged from the storage probe
+    // (slow `rclone about`) — until it lands each row shows a spinner.
+    const statusByName: Record<string, RemoteInfo> = {}
+    for (const r of remotes) statusByName[r.name] = r
+    const byType: Record<string, CRemote[]> = {}
+    for (const [name, props] of Object.entries(rconf?.remotes ?? {})) {
+      const type = props.type || 'other'
+      const st = statusByName[name]
+      ;(byType[type] ??= []).push({ name, type, ok: st?.ok ?? false, pending: !storage && !st })
+    }
     const mounted = new Set(remoteMounts.map((m) => base(m.target)))
     const mountPath: Record<string, string> = {}
     remoteMounts.forEach((m) => { mountPath[base(m.target)] = m.target })
@@ -320,10 +340,12 @@ export function StorageFlow() {
     out.push({ id: 'storage', type: 'ugroup', position: POS.storage, data: { union }, style: { width: 292, height: gH } })
     out.push({ id: 'local', type: 'lnode', parentId: 'storage', extent: 'parent', position: { x: 12, y: 46 }, data: { local: storage?.local } })
     out.push({ id: 'remote', type: 'rnode', parentId: 'storage', extent: 'parent', position: { x: 12, y: 100 }, data: { remotes: remoteMounts } })
-    if (remotes.length) out.push({ id: 'clounds', type: 'clounds', position: POS.clounds, data: { byType, mounted, mountPath } })
+    // Always render Clounds so it appears immediately (list from rclone.conf);
+    // per-remote status fills in once the storage probe returns.
+    out.push({ id: 'clounds', type: 'clounds', position: POS.clounds, data: { byType, mounted, mountPath } })
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [containers, mounts, storage])
+  }, [containers, mounts, storage, rconf])
 
   const defaultEdges = useMemo<Edge[]>(() => {
     const present = new Set(dataNodes.map((n) => n.id)) // includes storage/local/remote/clounds

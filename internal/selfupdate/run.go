@@ -78,8 +78,9 @@ func Run(jobID string) {
 	go func() {
 		time.Sleep(1500 * time.Millisecond)
 		if err := relaunch(self); err != nil {
-			// relaunch failed; exit so the supervisor (systemd) restarts us.
-			os.Exit(0)
+			// re-exec failed — exit non-zero so systemd (Restart=on-failure)
+			// restarts the service, which now points at the swapped binary.
+			os.Exit(1)
 		}
 	}()
 }
