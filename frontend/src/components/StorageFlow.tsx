@@ -10,7 +10,10 @@ import { Link2, Unlink, Pencil, Check, Plus, RotateCcw } from 'lucide-react'
 import { useMounts, useStorage, useContainers, type ContainerInfo, type RemoteInfo, type MountDetail } from '@/lib/api'
 import { cn } from '@/lib/cn'
 
-type Sub = { label: string; app: string; re: RegExp; companion?: RegExp }
+// `always`: keep this slot visible even with no matching container (e.g. cloudplow
+// runs as a service/cron, not a container, and is often disabled — show it as a
+// prepared slot). `note`: muted placeholder text shown when empty.
+type Sub = { label: string; app: string; re: RegExp; companion?: RegExp; always?: boolean; note?: string }
 const CATS: Record<string, { title: string; subs: Sub[] }> = {
   indexers: { title: 'Indexers', subs: [
     { label: 'Prowlarr', app: 'prowlarr', re: /^prowlarr/i }, { label: 'Jackett', app: 'jackett', re: /^jackett/i },
@@ -36,7 +39,7 @@ const CATS: Record<string, { title: string; subs: Sub[] }> = {
   ] },
   uploaders: { title: 'Uploaders', subs: [
     { label: 'Rclone Browser', app: 'rclonebrowser', re: /^rclonebrowser/i },
-    { label: 'Cloudplow', app: 'cloudplow', re: /^cloudplow/i },
+    { label: 'Cloudplow', app: 'cloudplow', re: /^cloudplow/i, always: true, note: 'disabled' },
   ] },
 }
 
@@ -46,7 +49,7 @@ const POS: Record<string, XYPosition> = {
   indexers: { x: 32, y: 144 }, requesters: { x: 32, y: 336 },
   downloaders: { x: 288, y: 16 }, importers: { x: 288, y: 176 },
   storage: { x: 544, y: 0 }, scaners: { x: 608, y: 336 },
-  uploaders: { x: 912, y: 16 }, media: { x: 912, y: 256 },
+  uploaders: { x: 912, y: 0 }, media: { x: 912, y: 256 },
   clounds: { x: 1140, y: 0 },
 }
 
@@ -92,7 +95,7 @@ function Handles() {
 }
 
 // ── nodes ────────────────────────────────────────────────────────────────────
-type CatData = { title: string; subs: { label: string; app: string; prim: ContainerInfo[]; comp: ContainerInfo[] }[] }
+type CatData = { title: string; subs: { label: string; app: string; prim: ContainerInfo[]; comp: ContainerInfo[]; note?: string }[] }
 function CategoryNode({ data }: NodeProps<Node<CatData>>) {
   const tip = useTipProps()
   const row = (c: ContainerInfo, app: string, companion = false) => (
@@ -104,12 +107,18 @@ function CategoryNode({ data }: NodeProps<Node<CatData>>) {
   return (
     <div className="rounded-lg border-2 border-border bg-card p-2 space-y-2 w-[170px] cursor-default">
       <div className="text-xs font-semibold text-foreground">{data.title}</div>
-      {data.subs.map((s) => (
-        <div key={s.label} className="rounded-md border border-border bg-secondary/50 p-1.5">
-          <div className="text-[11px] font-medium text-foreground mb-1">{s.label} <span className="text-muted-foreground">×{s.prim.length}</span></div>
-          <div className="space-y-0.5">{s.prim.map((c) => row(c, s.app))}{s.comp.map((c) => row(c, s.app, true))}</div>
-        </div>
-      ))}
+      {data.subs.map((s) => {
+        const empty = s.prim.length === 0 && s.comp.length === 0
+        return (
+          <div key={s.label} className="rounded-md border border-border bg-secondary/50 p-1.5">
+            <div className="text-[11px] font-medium text-foreground mb-1">{s.label}{!empty && <span className="text-muted-foreground"> ×{s.prim.length}</span>}</div>
+            <div className="space-y-0.5">
+              {s.prim.map((c) => row(c, s.app))}{s.comp.map((c) => row(c, s.app, true))}
+              {empty && <div className="flex items-center gap-1.5"><Dot muted /><span className="text-[11px] text-muted-foreground">{s.note ?? 'not deployed'}</span></div>}
+            </div>
+          </div>
+        )
+      })}
       <Handles />
     </div>
   )
@@ -301,10 +310,10 @@ export function StorageFlow() {
     const out: Node[] = []
     for (const [key, cat] of Object.entries(CATS)) {
       const subs = cat.subs.map((s) => ({
-        label: s.label, app: s.app,
+        label: s.label, app: s.app, note: s.note, always: s.always,
         prim: cs.filter((c) => s.re.test(c.name)),
         comp: s.companion ? cs.filter((c) => s.companion!.test(c.name)) : [],
-      })).filter((x) => x.prim.length || x.comp.length)
+      })).filter((x) => x.prim.length || x.comp.length || x.always)
       if (subs.length) out.push({ id: key, type: 'category', position: POS[key], data: { title: cat.title, subs } })
     }
     const gH = 156 + remoteMounts.length * 36 // generous so the Remote card never overflows
