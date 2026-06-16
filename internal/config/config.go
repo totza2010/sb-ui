@@ -71,7 +71,7 @@ func defaults() *Config {
 		KeyPath:        "~/.ssh/id_rsa",
 		SaltboxRepo:    "/srv/git/saltbox",
 		SandboxRepo:    "/opt/sandbox",
-		SaltboxModRepo: "/srv/git/saltbox_mod",
+		SaltboxModRepo: "/opt/saltbox_mod",
 		AnsibleBin:     "/usr/local/bin/ansible-playbook",
 	}
 }

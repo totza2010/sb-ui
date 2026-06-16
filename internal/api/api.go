@@ -99,8 +99,10 @@ func Mount(r chi.Router) {
 	r.Post("/api/apps/apply-patches", applyPatches)
 
 	// Role Builder
+	r.Get("/api/roles/mod", listModRoles)
 	r.Post("/api/roles/preview", rolePreview)
 	r.Post("/api/roles/commit", roleCommit)
+	r.Delete("/api/roles/{role}", removeModRole)
 
 	// Role file editor + patches
 	r.Get("/api/roles/{role}/files", roleFiles)

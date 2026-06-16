@@ -19,8 +19,11 @@ import (
 const fullHeader = "# full-content\n"
 
 func roleBase(repo, role string) string {
-	if repo == "sandbox" {
-		return "/opt/sandbox/roles/" + role
+	switch repo {
+	case "sandbox":
+		return config.Get().SandboxRepo + "/roles/" + role
+	case "mod":
+		return config.Get().SaltboxModRepo + "/roles/" + role
 	}
 	return config.Get().SaltboxRepo + "/roles/" + role
 }
@@ -35,7 +38,8 @@ func ctx() (context.Context, context.CancelFunc) {
 
 // gitOriginal returns the git HEAD content of a saltbox role file, or ("",false).
 func gitOriginal(repo, role, rel string) (string, bool) {
-	if repo == "sandbox" {
+	// sandbox + mod roles aren't in saltbox git → store full content, not a diff.
+	if repo == "sandbox" || repo == "mod" {
 		return "", false
 	}
 	c, cancel := ctx()

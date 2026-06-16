@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"sb-ui/internal/config"
+	dockerpkg "sb-ui/internal/docker"
 	"sb-ui/internal/executor"
 )
 
@@ -85,10 +86,10 @@ func systemStatus(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 
-		// Docker daemon reachable + running count.
-		drc, dout, _ := e.Run(ctx, []string{"docker", "ps", "-q"}, "")
-		if drc == 0 {
-			docker.OK, docker.Detail = true, fmt.Sprintf("%d running", lineCount(dout))
+		// Docker daemon reachable + running count — shares the cached snapshot
+		// used by the container/app lists instead of a separate `docker ps`.
+		if dockerpkg.Reachable() {
+			docker.OK, docker.Detail = true, fmt.Sprintf("%d running", dockerpkg.RunningCount())
 		} else {
 			docker.Detail = "down"
 		}
@@ -108,14 +109,4 @@ func friendlyKind(fstype string) string {
 	default:
 		return strings.TrimPrefix(fstype, "fuse.")
 	}
-}
-
-func lineCount(out string) int {
-	n := 0
-	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
-		if strings.TrimSpace(l) != "" {
-			n++
-		}
-	}
-	return n
 }

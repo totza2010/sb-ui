@@ -14,12 +14,13 @@ type ContainerInfo struct {
 	Ports   map[string]string `json:"ports"`
 }
 
-// ListContainers returns all containers (docker ps -a).
-func ListContainers() []ContainerInfo {
+// fetchContainers runs `docker ps -a` once. ok reports whether the daemon was
+// reachable (rc == 0), so callers can distinguish "no containers" from "down".
+func fetchContainers() (res []ContainerInfo, ok bool) {
 	rc, out := run("docker", "ps", "-a", "--format", "{{json .}}")
-	res := []ContainerInfo{}
+	res = []ContainerInfo{}
 	if rc != 0 {
-		return res
+		return res, false
 	}
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -41,7 +42,7 @@ func ListContainers() []ContainerInfo {
 			Image: row.Image, Ports: parsePorts(row.Ports),
 		})
 	}
-	return res
+	return res, true
 }
 
 func parsePorts(s string) map[string]string {

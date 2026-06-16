@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { LayoutDashboard, Package, Settings, Wrench, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container } from 'lucide-react'
+import { LayoutDashboard, Package, Settings, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useSetupStatus } from '@/lib/api'
 import { SelfUpdate } from '@/components/SelfUpdate'
@@ -14,14 +14,18 @@ const nav = [
   { to: '/inventory',  label: 'Inventory',    icon: ListTree },
   { to: '/backup',     label: 'Backup',       icon: DatabaseBackup },
   { to: '/files',      label: 'Files',        icon: FolderTree },
-  { to: '/roles',      label: 'Role Builder', icon: Wrench },
-  { to: '/setup',    label: 'Setup Wizard', icon: Wand2 },
   { to: '/logs',     label: 'Jobs & Logs',  icon: Activity },
 ]
 
 export function Sidebar() {
   const qc = useQueryClient()
   const { data: status } = useSetupStatus()
+
+  // Setup Wizard is only relevant on a fresh box. Once Saltbox is provisioned,
+  // drop it from the nav — re-linking a different host is "Reconfigure connection".
+  const items = status && !status.saltbox_configured
+    ? [...nav.slice(0, -1), { to: '/setup', label: 'Setup Wizard', icon: Wand2 }, nav[nav.length - 1]]
+    : nav
 
   return (
     <aside className="w-56 shrink-0 border-r border-border bg-card flex flex-col h-screen">
@@ -42,7 +46,7 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto py-3 space-y-0.5 px-3">
-        {nav.map(({ to, label, icon: Icon }) => (
+        {items.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

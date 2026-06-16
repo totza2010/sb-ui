@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sb-ui/internal/config"
+	"sb-ui/internal/configfiles"
 	"sb-ui/internal/executor"
 )
 
@@ -28,7 +29,25 @@ func setupStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"configured": c.Configured, "mode": mode, "host": host,
 		"user": c.User, "port": c.Port, "key": c.KeyPath, "auth_type": authType,
+		"saltbox_configured": saltboxConfigured(),
 	})
+}
+
+// saltboxConfigured reports whether the initial Saltbox setup has already run,
+// i.e. accounts.yml has a real domain + username. Used to hide the Setup Wizard
+// once the box is provisioned (it only matters on a fresh install).
+func saltboxConfigured() bool {
+	m, err := configfiles.Read("accounts")
+	if err != nil {
+		return false
+	}
+	u, ok := m["user"].(map[string]any)
+	if !ok {
+		return false
+	}
+	domain, _ := u["domain"].(string)
+	name, _ := u["name"].(string)
+	return strings.TrimSpace(domain) != "" && strings.TrimSpace(name) != ""
 }
 
 func setupTest(w http.ResponseWriter, req *http.Request) {

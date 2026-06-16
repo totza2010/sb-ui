@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"path"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,26 +32,115 @@ func rolePreview(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+// roleCommit generates a user role into saltbox_mod (the persistent home for
+// own roles — survives `sb update`), registers it, and installs `mod-<name>`.
 func roleCommit(w http.ResponseWriter, req *http.Request) {
 	var spec rolegen.Spec
 	if err := json.NewDecoder(req.Body).Decode(&spec); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := rolegen.WriteRole(spec); err != nil {
+	if !validRoleName(spec.Name) {
+		http.Error(w, "Invalid role name", http.StatusBadRequest)
+		return
+	}
+	if err := rolegen.WriteRoleMod(spec); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	_ = rolegen.PatchSandboxYml(spec.Name)
-	tag := "sandbox-" + spec.Name
+	_ = rolegen.PatchModYml(spec.Name)
+	tag := "mod-" + spec.Name
 	j := jobs.Create(tag, "install")
 	go ansible.RunPlaybook(context.Background(), j.ID, tag)
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
 }
 
+// listModRoles lists user-managed saltbox_mod roles (excluding sb-ui's own
+// `sbui` role — you don't manage the manager from inside itself).
+func listModRoles(w http.ResponseWriter, _ *http.Request) {
+	modBase := config.Get().SaltboxModRepo + "/roles"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rc, out, _ := executor.Get().Run(ctx, []string{
+		"find", modBase, "-maxdepth", "1", "-mindepth", "1", "-type", "d", "-printf", `%f\n`,
+	}, "")
+	registered := registeredModRoles(ctx)
+	roles := []map[string]any{}
+	if rc == 0 {
+		for _, name := range strings.Split(out, "\n") {
+			name = strings.TrimSpace(name)
+			if name == "" || name == "sbui" {
+				continue
+			}
+			roles = append(roles, map[string]any{
+				"name": name, "registered": registered[name],
+			})
+		}
+	}
+	sortRoleEntries(roles)
+	writeJSON(w, http.StatusOK, map[string]any{"roles": roles, "base": modBase})
+}
+
+// registeredModRoles parses saltbox_mod.yml for `role: <name>` entries.
+func registeredModRoles(ctx context.Context) map[string]bool {
+	set := map[string]bool{}
+	content, err := executor.Get().ReadFile(ctx, config.Get().SaltboxModPlaybook())
+	if err != nil {
+		return set
+	}
+	for _, m := range roleEntryRE.FindAllStringSubmatch(content, -1) {
+		set[m[1]] = true
+	}
+	return set
+}
+
+var roleEntryRE = regexp.MustCompile(`role:\s*([A-Za-z0-9_-]+)`)
+
+// removeModRole uninstalls a user role: stop+remove its container, delete the
+// role directory, and unregister it from saltbox_mod.yml. Refuses `sbui`.
+func removeModRole(w http.ResponseWriter, req *http.Request) {
+	role := chi.URLParam(req, "role")
+	if !validRoleName(role) || role == "sbui" {
+		http.Error(w, "Invalid role", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	e := executor.Get()
+	// Best-effort container teardown (role name is the usual container name).
+	_, _, _ = e.Run(ctx, []string{"docker", "rm", "-f", role}, "")
+	dir := config.Get().SaltboxModRepo + "/roles/" + role
+	if rc, out, err := e.Run(ctx, []string{"rm", "-rf", dir}, ""); err != nil || rc != 0 {
+		msg := strings.TrimSpace(out)
+		if err != nil {
+			msg = err.Error()
+		}
+		http.Error(w, "Failed to delete role: "+msg, http.StatusInternalServerError)
+		return
+	}
+	_ = rolegen.UnregisterModYml(role)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func sortRoleEntries(roles []map[string]any) {
+	sort.Slice(roles, func(i, j int) bool {
+		return roles[i]["name"].(string) < roles[j]["name"].(string)
+	})
+}
+
+func validRoleName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	return regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`).MatchString(s)
+}
+
 func roleBase(role, repo string) string {
-	if repo == "sandbox" {
-		return "/opt/sandbox/roles/" + role
+	switch repo {
+	case "sandbox":
+		return config.Get().SandboxRepo + "/roles/" + role
+	case "mod":
+		return config.Get().SaltboxModRepo + "/roles/" + role
 	}
 	return config.Get().SaltboxRepo + "/roles/" + role
 }

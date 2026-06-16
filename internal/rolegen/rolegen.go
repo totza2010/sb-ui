@@ -4,6 +4,7 @@ package rolegen
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"time"
 
@@ -151,11 +152,21 @@ func GenerateDefaults(s Spec) string {
 
 func GenerateTasks(Spec) string { return tasksTmpl }
 
+// WriteRole writes a generated role into the Sandbox repo.
 func WriteRole(s Spec) error {
+	return writeRoleAt(s, config.Get().SandboxRepo+"/roles/"+s.Name)
+}
+
+// WriteRoleMod writes a generated role into the saltbox_mod repo — the intended
+// home for user-created roles (survives `sb update`, unlike the core repos).
+func WriteRoleMod(s Spec) error {
+	return writeRoleAt(s, config.Get().SaltboxModRepo+"/roles/"+s.Name)
+}
+
+func writeRoleAt(s Spec, base string) error {
 	e := executor.Get()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	base := config.Get().SandboxRepo + "/roles/" + s.Name
 	if err := e.MakeDirs(ctx, base+"/tasks"); err != nil {
 		return err
 	}
@@ -168,11 +179,18 @@ func WriteRole(s Spec) error {
 	return e.WriteFile(ctx, base+"/tasks/main.yml", GenerateTasks(s))
 }
 
-func PatchSandboxYml(name string) error {
+// PatchSandboxYml registers a role in sandbox.yml.
+func PatchSandboxYml(name string) error { return patchPlaybook(config.Get().SandboxPlaybook(), name) }
+
+// PatchModYml registers a role in saltbox_mod.yml.
+func PatchModYml(name string) error { return patchPlaybook(config.Get().SaltboxModPlaybook(), name) }
+
+// patchPlaybook inserts a `- { role: <name>, tags: ['<name>'] }` entry before
+// the "# Apps End" marker, reusing that line's indentation so YAML stays valid.
+func patchPlaybook(yml, name string) error {
 	e := executor.Get()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	yml := config.Get().SandboxPlaybook()
 	if ok, _ := e.FileExists(ctx, yml); !ok {
 		return nil
 	}
@@ -180,17 +198,37 @@ func PatchSandboxYml(name string) error {
 	if err != nil {
 		return err
 	}
-	if strings.Contains(content, name) {
+	if regexp.MustCompile(`role:\s*` + regexp.QuoteMeta(name) + `\b`).MatchString(content) {
 		return nil
 	}
-	entry := "    - { role: " + name + ", tags: ['" + name + "'] }\n"
-	marker := "    # Apps End"
-	if strings.Contains(content, marker) {
+	indent := "    "
+	if m := regexp.MustCompile(`(?m)^(\s*)# Apps End`).FindStringSubmatch(content); m != nil {
+		indent = m[1]
+	}
+	entry := indent + "- { role: " + name + ", tags: ['" + name + "'] }\n"
+	if marker := indent + "# Apps End"; strings.Contains(content, marker) {
 		content = strings.Replace(content, marker, entry+marker, 1)
 	} else {
 		content += "\n" + entry
 	}
 	return e.WriteFile(ctx, yml, content)
+}
+
+// UnregisterModYml removes a role's entry from saltbox_mod.yml.
+func UnregisterModYml(name string) error {
+	e := executor.Get()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	yml := config.Get().SaltboxModPlaybook()
+	if ok, _ := e.FileExists(ctx, yml); !ok {
+		return nil
+	}
+	content, err := e.ReadFile(ctx, yml)
+	if err != nil {
+		return err
+	}
+	re := regexp.MustCompile(`(?m)^\s*-\s*\{\s*role:\s*` + regexp.QuoteMeta(name) + `\b.*\}\s*\n?`)
+	return e.WriteFile(ctx, yml, re.ReplaceAllString(content, ""))
 }
 
 func orDefault(s, d string) string {

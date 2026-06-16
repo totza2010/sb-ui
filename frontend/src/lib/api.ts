@@ -566,6 +566,7 @@ export interface SetupStatus {
   port: number
   key: string
   auth_type: 'key' | 'password'
+  saltbox_configured: boolean
 }
 
 export interface TestResult {
@@ -610,4 +611,21 @@ export const usePreviewRole = () =>
 export const useCommitRole = () =>
   useMutation<{ job_id: string }, Error, RoleSpec>({
     mutationFn: (spec) => request('/roles/commit', { method: 'POST', body: JSON.stringify(spec) }),
+  })
+
+export interface ModRole {
+  name: string
+  registered: boolean
+}
+
+// User-managed saltbox_mod roles (sb-ui's own `sbui` role is excluded server-side).
+export const useModRoles = () =>
+  useQuery<{ roles: ModRole[]; base: string }>({
+    queryKey: ['mod-roles'],
+    queryFn: () => request('/roles/mod'),
+  })
+
+export const useRemoveRole = () =>
+  useMutation<{ ok: boolean }, Error, { role: string }>({
+    mutationFn: ({ role }) => request(`/roles/${encodeURIComponent(role)}`, { method: 'DELETE' }),
   })

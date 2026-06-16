@@ -20,37 +20,6 @@ func run(cmd ...string) (int, string) {
 	return rc, out
 }
 
-// RunningNames returns the set of running container names.
-func RunningNames() map[string]bool {
-	rc, out := run("docker", "ps", "--format", "{{.Names}}")
-	set := map[string]bool{}
-	if rc != 0 {
-		return set
-	}
-	for _, l := range strings.Split(out, "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			set[l] = true
-		}
-	}
-	return set
-}
-
-// ContainerImages maps running container name → image string.
-func ContainerImages() map[string]string {
-	rc, out := run("docker", "ps", "--format", "{{.Names}}\t{{.Image}}")
-	m := map[string]string{}
-	if rc != 0 {
-		return m
-	}
-	for _, l := range strings.Split(out, "\n") {
-		parts := strings.SplitN(strings.TrimSpace(l), "\t", 2)
-		if len(parts) == 2 {
-			m[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-		}
-	}
-	return m
-}
-
 // ActiveServices returns names (without .service) of active systemd services.
 func ActiveServices() map[string]bool {
 	rc, out := run("systemctl", "list-units", "--type=service", "--state=active",
@@ -102,6 +71,7 @@ func ContainerAction(name, action string) error {
 	if rc != 0 {
 		return &cmdErr{strings.TrimSpace(out)}
 	}
+	invalidate() // container state changed — force a fresh snapshot next read
 	return nil
 }
 

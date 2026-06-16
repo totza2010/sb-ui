@@ -15,16 +15,18 @@ import { useJobSocket } from '@/hooks/useJobSocket'
 import {
   Download, RefreshCw, Trash2, Search, ArrowDownToLine,
   GitCommit, AlertTriangle, CheckCircle2, Loader2, ArrowUpCircle, Settings2,
-  ChevronDown, ChevronRight, Layers, Play, Square, Plus, Pencil, X,
+  ChevronDown, ChevronRight, Layers, Play, Square, Plus, Pencil, X, Package,
 } from 'lucide-react'
 import { RoleConfigModal } from '@/components/RoleConfigModal'
 import { AppDetail } from '@/components/AppDetail'
+import { ListRow } from '@/components/ListRow'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@/lib/cn'
 import { InstallTypes } from '@/pages/InstallTypes'
+import { CustomRoles } from '@/components/CustomRoles'
 
 type Filter = 'all' | 'saltbox' | 'sandbox' | 'outdated'
-type Mode = 'installed' | 'add' | 'install-types'
+type Mode = 'installed' | 'add' | 'install-types' | 'roles'
 
 function statusBadge(app: AppInfo) {
   if (!app.installed) return null
@@ -234,6 +236,32 @@ function AppCard({
 
       {showPanel && <InstancePanel app={app} multiInstance={multiInstance} onInstanceAction={onInstanceAction} />}
     </div>
+  )
+}
+
+// AddRow — one available (not-installed) app, rendered via the shared ListRow.
+function AddRow({ app, onAction, onConfigure }: {
+  app: AppInfo
+  onAction: (tag: string, action: string) => void
+  onConfigure: (app: AppInfo) => void
+}) {
+  return (
+    <ListRow
+      icon={<Package />}
+      title={<>
+        <span className="text-sm font-medium text-foreground capitalize truncate">{app.name}</span>
+        <Badge variant={app.repo === 'sandbox' ? 'secondary' : 'outline'} className="text-xs shrink-0">{app.repo}</Badge>
+      </>}
+      subtitle={app.tag}
+      actions={<>
+        <Button size="sm" variant="outline" title="Configure inventory variables" onClick={() => onConfigure(app)}>
+          <Settings2 className="h-3.5 w-3.5 mr-1.5" />Configure
+        </Button>
+        <Button size="sm" className="gap-1.5" onClick={() => onAction(app.tag, 'install')}>
+          <Download className="h-3.5 w-3.5" />Install
+        </Button>
+      </>}
+    />
   )
 }
 
@@ -749,7 +777,7 @@ export function AppManager() {
 
       {/* Mode toggle: installed apps vs add-app catalog */}
       <div className="flex items-center gap-2 border-b border-border">
-        {([['installed', `Installed (${installedCount})`], ['add', `Add app (${availableCount})`], ['install-types', 'Install types']] as const).map(([m, label]) => (
+        {([['installed', `Installed (${installedCount})`], ['add', `Add app (${availableCount})`], ['install-types', 'Install types'], ['roles', 'Custom roles']] as const).map(([m, label]) => (
           <button key={m} onClick={() => setMode(m)}
             className={cn('px-3 py-2 text-sm border-b-2 -mb-px transition-colors',
               mode === m ? 'border-primary text-foreground font-medium' : 'border-transparent text-muted-foreground hover:text-foreground')}>
@@ -759,7 +787,7 @@ export function AppManager() {
       </div>
 
       {/* Search + (add-mode) repo filters */}
-      {mode !== 'install-types' && (
+      {(mode === 'installed' || mode === 'add') && (
         <div className="flex gap-3 flex-wrap">
           <div className="relative flex-1 min-w-52">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -778,6 +806,7 @@ export function AppManager() {
       )}
 
       {mode === 'install-types' && <InstallTypes embedded />}
+      {mode === 'roles' && <CustomRoles />}
 
       {isLoading && <p className="text-muted-foreground text-sm">Loading apps…</p>}
 
@@ -830,11 +859,9 @@ export function AppManager() {
           ))}
         </div>
       ) : mode === 'add' ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+        <div className="space-y-2">
           {addApps.map((app) => (
-            <AppCard key={app.tag} app={app} onAction={handleAction}
-              updateStatus={imageOutdated} onConfigure={setConfiguringApp}
-              onInstanceAction={handleInstanceAction} />
+            <AddRow key={app.tag} app={app} onAction={handleAction} onConfigure={setConfiguringApp} />
           ))}
         </div>
       ) : null}

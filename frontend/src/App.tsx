@@ -6,7 +6,6 @@ import { Dashboard } from '@/pages/Dashboard'
 import { AppManager } from '@/pages/AppManager'
 import { Containers } from '@/pages/Containers'
 import { ConfigEditor } from '@/pages/ConfigEditor'
-import { RoleBuilder } from '@/pages/RoleBuilder'
 import { SetupWizard } from '@/pages/SetupWizard'
 import { JobsLogs } from '@/pages/JobsLogs'
 import { Inventory } from '@/pages/Inventory'
@@ -57,7 +56,6 @@ function AppInner() {
             <Route path="/apps"   element={<AppManager />} />
             <Route path="/containers" element={<Containers />} />
             <Route path="/config" element={<ConfigEditor />} />
-            <Route path="/roles"  element={<RoleBuilder />} />
             <Route path="/setup"  element={<SetupWizard />} />
             <Route path="/inventory" element={<Inventory />} />
             <Route path="/backup" element={<Backup />} />
