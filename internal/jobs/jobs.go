@@ -1,6 +1,6 @@
 // Package jobs tracks background jobs (install/update/…), streams their logs to
 // WebSocket subscribers, and persists log + history to /opt/saltbox-ui so the
-// History view survives restarts. Port of job_queue.py + models/job.py.
+// History view survives restarts.
 package jobs
 
 import (

@@ -1,5 +1,5 @@
 // Package docker wraps docker + systemctl via the executor, and tracks image
-// update results (persisted to /opt/saltbox-ui). Port of docker_client.py.
+// update results (persisted to /opt/saltbox-ui).
 package docker
 
 import (

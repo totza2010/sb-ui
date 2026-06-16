@@ -1,5 +1,4 @@
-// Package config loads sb-ui settings from the same .env the Python backend
-// uses (SALTBOX_* keys), so both can share one config file.
+// Package config loads sb-ui settings from a .env file (SALTBOX_* keys).
 package config
 
 import (

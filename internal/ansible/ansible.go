@@ -1,6 +1,6 @@
 // Package ansible runs ansible-playbook for install/update/remove actions,
 // routing tags to the right playbook (saltbox / sandbox / mod) and streaming
-// output into a job. Port of ansible.py.
+// output into a job.
 package ansible
 
 import (

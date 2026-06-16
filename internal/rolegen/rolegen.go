@@ -1,5 +1,5 @@
 // Package rolegen generates a Sandbox role's defaults/tasks from a spec and
-// writes it (+ patches sandbox.yml). Port of role_generator.py.
+// writes it (+ patches sandbox.yml).
 package rolegen
 
 import (

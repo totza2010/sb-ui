@@ -1,6 +1,5 @@
 // Package inventory reads the Saltbox inventory (host_vars/localhost.yml) and
-// builds a catalog of role defaults (defaults/main.yml). Port of the read +
-// catalog parts of inventory.py (write/sections come in a later phase).
+// builds a catalog of role defaults (defaults/main.yml).
 package inventory
 
 import (

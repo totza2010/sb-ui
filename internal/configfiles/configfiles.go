@@ -1,5 +1,5 @@
 // Package configfiles reads/writes the Saltbox YAML config files
-// (accounts / settings / adv_settings / backup_config). Port of config_parser.py.
+// (accounts / settings / adv_settings / backup_config).
 //
 // NOTE: writing round-trips through a map, so YAML comments are not preserved
 // (parity gap vs ruamel — acceptable per the migration plan; raw file editing

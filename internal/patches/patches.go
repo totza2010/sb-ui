@@ -1,6 +1,5 @@
 // Package patches stores role-file edits as unified diffs (or full content for
 // sandbox) under /opt/saltbox-ui/patches and re-applies them after sb update.
-// Port of patches.py.
 package patches
 
 import (

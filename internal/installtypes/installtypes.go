@@ -1,6 +1,5 @@
 // Package installtypes customises Saltbox profiles (saltbox/mediabox/feederbox)
 // and the dynamic *_enabled lists, persisted as inventory overrides.
-// Port of install_types.py.
 package installtypes
 
 import (

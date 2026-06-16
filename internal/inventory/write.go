@@ -60,7 +60,7 @@ type AppdataPath struct {
 }
 
 // ResolveAppdata returns each instance's real /opt appdata folder, honouring
-// inventory path overrides (e.g. sonarr_role_paths_folder). Port of app_appdata.
+// inventory path overrides (e.g. sonarr_role_paths_folder).
 func ResolveAppdata(tag string) []AppdataPath {
 	bare := strings.TrimPrefix(strings.TrimPrefix(tag, "sandbox-"), "mod-")
 	role := strings.ReplaceAll(bare, "-", "_")

@@ -1,6 +1,6 @@
 // Package bundles computes Saltbox meta/bundle tags (core/mounts/profiles/…) and
 // their member roles from the live repo: static play tags + dynamic include_role
-// edges (gated on ansible_run_tags). Port of bundles.py.
+// edges (gated on ansible_run_tags).
 package bundles
 
 import (

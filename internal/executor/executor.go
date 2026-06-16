@@ -1,7 +1,6 @@
 // Package executor runs commands and reads/writes files either on the local
-// machine or on a remote Saltbox host over SSH/SFTP — a Go port of the Python
-// executor abstraction. All higher layers use the Executor interface so the
-// backend works against local or remote with no code changes.
+// machine or on a remote Saltbox host over SSH/SFTP. All higher layers use the
+// Executor interface so the backend works against local or remote unchanged.
 package executor
 
 import (

@@ -1,5 +1,5 @@
 // Package sysinfo gathers CPU/RAM/disk/uptime from /proc + df via the executor
-// (works for local and remote Linux). Port of system.py's shell stats.
+// (works for local and remote Linux).
 package sysinfo
 
 import (

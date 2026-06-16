@@ -1,6 +1,6 @@
 // Package apps builds the installed/available app list from cache.json + docker
 // + systemd + inventory: classification, instances, companions, categories,
-// action-tag filtering and storage/FUSE detection. Port of saltbox.py.
+// action-tag filtering and storage/FUSE detection.
 package apps
 
 import (

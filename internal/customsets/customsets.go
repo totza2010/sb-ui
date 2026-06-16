@@ -1,5 +1,5 @@
 // Package customsets stores user-defined install sets (name + tags) under
-// /opt/saltbox-ui/cache. Port of custom_sets.py.
+// /opt/saltbox-ui/cache.
 package customsets
 
 import (

@@ -1,5 +1,5 @@
 // Package store persists UI state on the Saltbox host (via the executor, like
-// patches) under /opt/saltbox-ui — survives restarts. Port of store.py.
+// patches) under /opt/saltbox-ui — survives restarts.
 package store
 
 import (

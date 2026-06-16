@@ -1,5 +1,4 @@
-// Package api wires the HTTP + WebSocket routes. It mirrors the Python backend's
-// API contract so the React frontend works unchanged.
+// Package api wires the HTTP + WebSocket routes that serve the React frontend.
 package api
 
 import (
