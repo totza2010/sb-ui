@@ -12,7 +12,9 @@ User=__SB_USER__
 Group=__SB_USER__
 WorkingDirectory=/opt/saltbox-ui
 EnvironmentFile=-/opt/saltbox-ui/.env
-Environment=SB_UI_ADDR=:8000
+# Loopback only — the API is unauthenticated. Reach it via an SSH tunnel, or put
+# an authenticating reverse proxy in front and point SB_UI_ADDR at its upstream.
+Environment=SB_UI_ADDR=127.0.0.1:8000
 ExecStart=/opt/saltbox-ui/sb-ui
 Restart=on-failure
 RestartSec=5

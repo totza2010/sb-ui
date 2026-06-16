@@ -1,8 +1,7 @@
 // sb-ui — Go backend for the Saltbox web UI.
 //
-// Single binary: serves the embedded React frontend (SPA) plus the HTTP + WS API.
-// The API contract matches the Python backend so the frontend runs unchanged.
-// See ../saltbox-ui/GO_MIGRATION_PLAN.md.
+// Single binary: serves the embedded React frontend (SPA) plus the HTTP + WS API,
+// driving a Saltbox host locally or over SSH.
 package main
 
 import (
@@ -66,7 +65,10 @@ func main() {
 
 	addr := os.Getenv("SB_UI_ADDR")
 	if addr == "" {
-		addr = ":8000"
+		// Loopback by default — the API is unauthenticated, so it must not be
+		// exposed on all interfaces unless explicitly requested via SB_UI_ADDR.
+		// The saltbox_mod service sets SB_UI_ADDR itself (it runs behind Authelia).
+		addr = "127.0.0.1:8000"
 	}
 	log.Printf("sb-ui %s listening on %s", buildinfo.Version, addr)
 	log.Fatal(http.ListenAndServe(addr, r))

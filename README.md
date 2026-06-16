@@ -75,8 +75,16 @@ Two paths — pick one.
 curl -fsSL https://raw.githubusercontent.com/totza2010/sb-ui/master/install.sh | sudo bash
 ```
 
-Binary → `/opt/saltbox-ui`, raw systemd unit, listens on `:8000`. No Traefik /
-SSO / DNS. Open `http://<host>:8000` and run the setup wizard.
+Binary → `/opt/saltbox-ui`, raw systemd unit. **The API is unauthenticated, so
+it listens on `127.0.0.1:8000` (loopback only)** — there's no Traefik / SSO / DNS
+in this mode. Reach it with an SSH tunnel:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 user@host    # then open http://localhost:8000
+```
+
+Or put an authenticating reverse proxy in front and set `SB_UI_ADDR` to its
+upstream. Then run the setup wizard.
 
 ```bash
 systemctl status sb-ui      # status

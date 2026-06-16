@@ -8,14 +8,14 @@
 #   SB_UI_REPO    GitHub repo (default totza2010/sb-ui)
 #   SB_UI_VERSION release tag (default: latest)
 #   SB_UI_DIR     install dir   (default /opt/saltbox-ui)
-#   SB_UI_ADDR    listen addr   (default :8000)
+#   SB_UI_ADDR    listen addr   (default 127.0.0.1:8000 — loopback; API is unauthenticated)
 #   SB_UI_USER    service user  (default: the owner of SB_UI_DIR, else current sudo user)
 set -euo pipefail
 
 REPO="${SB_UI_REPO:-totza2010/sb-ui}"
 VERSION="${SB_UI_VERSION:-latest}"
 DIR="${SB_UI_DIR:-/opt/saltbox-ui}"
-ADDR="${SB_UI_ADDR:-:8000}"
+ADDR="${SB_UI_ADDR:-127.0.0.1:8000}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Please run as root (sudo)." >&2
