@@ -84,6 +84,13 @@ func Mount(r chi.Router) {
 	r.Put("/api/fs/file", fsWriteFile)
 	r.Get("/api/fs/read", fsReadFile)
 	r.Put("/api/fs/write", fsWriteFile)
+	r.Post("/api/fs/mkdir", fsMkdir)
+	r.Post("/api/fs/rename", fsRename)
+	r.Post("/api/fs/delete", fsDelete)
+	r.Post("/api/fs/move", fsTransfer(true))
+	r.Post("/api/fs/copy", fsTransfer(false))
+	r.Post("/api/fs/upload", fsUpload)
+	r.Get("/api/fs/download", fsDownload)
 
 	// Bundles / install types / custom sets
 	r.Get("/api/bundles", listBundles)

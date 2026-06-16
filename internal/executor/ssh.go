@@ -250,6 +250,28 @@ func (e *SSHExecutor) WriteFile(_ context.Context, path, content string) error {
 	return err
 }
 
+func (e *SSHExecutor) Upload(_ context.Context, path string, src io.Reader) error {
+	s, err := e.sftpClient()
+	if err != nil {
+		return err
+	}
+	f, err := s.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, src)
+	return err
+}
+
+func (e *SSHExecutor) Download(_ context.Context, path string) (io.ReadCloser, error) {
+	s, err := e.sftpClient()
+	if err != nil {
+		return nil, err
+	}
+	return s.Open(path) // *sftp.File is an io.ReadCloser; caller closes
+}
+
 func (e *SSHExecutor) FileExists(_ context.Context, path string) (bool, error) {
 	s, err := e.sftpClient()
 	if err != nil {

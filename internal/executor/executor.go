@@ -49,6 +49,10 @@ type Executor interface {
 	WriteFile(ctx context.Context, path, content string) error
 	FileExists(ctx context.Context, path string) (bool, error)
 	MakeDirs(ctx context.Context, path string) error
+	// Upload streams src into the file at path (for large binary uploads).
+	Upload(ctx context.Context, path string, src io.Reader) error
+	// Download opens path for streaming reads; caller closes the reader.
+	Download(ctx context.Context, path string) (io.ReadCloser, error)
 	Close() error
 }
 
@@ -199,6 +203,20 @@ func (LocalExecutor) FileExists(_ context.Context, path string) (bool, error) {
 
 func (LocalExecutor) MakeDirs(_ context.Context, path string) error {
 	return os.MkdirAll(path, 0o755)
+}
+
+func (LocalExecutor) Upload(_ context.Context, path string, src io.Reader) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(f, src)
+	return err
+}
+
+func (LocalExecutor) Download(_ context.Context, path string) (io.ReadCloser, error) {
+	return os.Open(path)
 }
 
 func (LocalExecutor) Close() error { return nil }
