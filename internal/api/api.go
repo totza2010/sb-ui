@@ -106,6 +106,7 @@ func Mount(r chi.Router) {
 	r.Put("/api/uploader", putUploader)
 	r.Get("/api/uploader/status", uploaderStatus)
 	r.Post("/api/uploader/run", uploaderRun)
+	r.Post("/api/uploader/simulate", uploaderSimulate)
 	startUploader()
 	r.Get("/api/rclone/status", rcloneStatus)
 	r.Get("/api/rclone/logs", rcloneLogs)

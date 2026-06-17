@@ -672,7 +672,7 @@ export const useQueueTask = () =>
 export const useToggleTask = () =>
   useMutation<TransferTask, Error, string>({ mutationFn: (id) => request(`/tasks/${id}/toggle`, { method: 'POST' }) })
 
-export interface UploaderRemote { name: string; dest: string; cap: string; gap_min: number; bwlimit: string; tpslimit: number }
+export interface UploaderRemote { task_id?: string; name: string; dest: string; cap: string; cap_files?: number; gap_min: number; bwlimit: string; tpslimit: number }
 export interface UploaderConfig {
   enabled: boolean; source: string; threshold: string; strategy: 'lru' | 'round_robin' | 'most_free'; interval_minutes: number
   allowed_from?: string; allowed_until?: string; min_age?: string; delete_empty_src?: boolean; excludes?: string[]
@@ -681,7 +681,7 @@ export interface UploaderConfig {
 export interface UploaderStatus {
   enabled: boolean; source: string; threshold: string; last_size: string; last_size_bytes: number
   last_check: string | null; message: string
-  remotes: { name: string; cap: string; used_today: string; used_bytes: number; last_upload: string | null }[]
+  remotes: { name: string; task_id?: string; cap: string; used_today: string; used_bytes: number; cap_files?: number; files_today?: number; last_upload: string | null; paused_until?: string | null }[]
 }
 export const useUploader = () =>
   useQuery<UploaderConfig>({ queryKey: ['uploader'], queryFn: () => request('/uploader') })
@@ -691,6 +691,14 @@ export const useUploaderStatus = () =>
   useQuery<UploaderStatus>({ queryKey: ['uploader-status'], queryFn: () => request('/uploader/status'), refetchInterval: 5000 })
 export const useUploaderRun = () =>
   useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/uploader/run', { method: 'POST' }) })
+
+export interface SimStep { kind: 'move' | 'wait' | 'blocked'; at: string; until?: string; remote?: string; task_id?: string; bytes?: string; files?: number; max_transfer?: string; remaining?: string; rate?: string; took_min?: number; paused?: boolean; note?: string }
+export interface SimRemote { name: string; task_id?: string; bytes: string; files: number; cap: string; cap_files: number }
+export interface SimResult { steps: SimStep[]; summary: SimRemote[]; total: string; moved: string; done: boolean; elapsed_min: number }
+export const useUploaderSimulate = () =>
+  useMutation<SimResult, Error, { total: string; avg_file: string; per_conn: string; scenario: string; flood_remote: string; config: UploaderConfig }>({
+    mutationFn: (b) => request('/uploader/simulate', { method: 'POST', body: JSON.stringify(b) }),
+  })
 
 export interface QueueState { running: boolean; current: { job_id: string; label: string } | null; items: { job_id: string; label: string }[] }
 export const useQueue = () =>

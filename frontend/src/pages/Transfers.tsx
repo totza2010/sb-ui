@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { LogStream } from '@/components/LogStream'
 import { PathPicker, type PickItem } from '@/components/PathPicker'
 import { cn } from '@/lib/cn'
-import { ArrowRightLeft, Rocket, FolderInput, FilePlus2, X, ChevronDown, ChevronRight, Plus, Save, Clock, Play, ListPlus, Pencil, Trash2, Square, Pause, ArrowUp, ArrowDown } from 'lucide-react'
+import { ArrowRightLeft, Rocket, FolderInput, FilePlus2, X, ChevronDown, ChevronRight, Plus, Save, Clock, Play, ListPlus, Pencil, Trash2, Square, Pause, ArrowUp, ArrowDown, Zap } from 'lucide-react'
 
 const TRANSFER_OPS = new Set(['copy', 'move', 'sync'])
 const statusVariant = { completed: 'success', running: 'default', failed: 'destructive', pending: 'secondary', stopped: 'secondary' } as const
@@ -320,16 +320,24 @@ export function Transfers() {
               </button>
               {showSettings && (
                 <div className="mt-2 space-y-3 rounded-md border border-border p-3">
+                  {types.includes('teldrive') && (
+                    <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs space-y-1.5">
+                      <p className="font-medium text-foreground flex items-center gap-1.5"><Zap className="h-3.5 w-3.5 text-amber-500" />teldrive destination — ban-avoidance recommended</p>
+                      <p className="text-muted-foreground">Telegram throttles by API request rate (not bytes). Pace rclone with <span className="font-mono text-foreground">tps 8 · transfers 4 · checkers 4</span> so it stays under flood limits — on FLOOD_WAIT the Uploader also auto-pauses the remote.</p>
+                      <Button size="sm" variant="outline" className="h-7" onClick={() => setOpts((o) => ({ ...o, tpslimit: 8, transfers: 4, checkers: 4 }))}>Apply recommended</Button>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    <NumField label="Transfers" v={opts.transfers} on={(n) => setOpt('transfers', n)} ph="4" />
-                    <NumField label="Checkers" v={opts.checkers} on={(n) => setOpt('checkers', n)} ph="8" />
+                    <NumField label="Transfers" v={opts.transfers} on={(n) => setOpt('transfers', n)} ph="4 (default)" />
+                    <NumField label="Checkers" v={opts.checkers} on={(n) => setOpt('checkers', n)} ph="8 (default)" />
                     <NumField label="tps limit" v={opts.tpslimit} on={(n) => setOpt('tpslimit', n)} ph="off" />
-                    <NumField label="Retries" v={opts.retries} on={(n) => setOpt('retries', n)} ph="3" />
+                    <NumField label="Retries" v={opts.retries} on={(n) => setOpt('retries', n)} ph="3 (default)" />
                     <div className="space-y-1 col-span-2 sm:col-span-1">
                       <Label className="text-[11px]">Bandwidth</Label>
-                      <Input className="h-8" value={opts.bwlimit ?? ''} onChange={(e) => setOpt('bwlimit', e.target.value)} placeholder="e.g. 10M" />
+                      <Input className="h-8" value={opts.bwlimit ?? ''} onChange={(e) => setOpt('bwlimit', e.target.value)} placeholder="unlimited" />
                     </div>
                   </div>
+                  <p className="text-[11px] text-muted-foreground">Blank = rclone defaults: transfers <span className="font-mono">4</span>, checkers <span className="font-mono">8</span>, retries <span className="font-mono">3</span>, tps <span className="font-mono">off</span>, bandwidth <span className="font-mono">unlimited</span>.</p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                     <Chk label="Skip existing (--ignore-existing)" v={!!opts.ignore_existing} on={(b) => setOpt('ignore_existing', b)} />
                     <Chk label="Skip newer on dest (--update)" v={!!opts.update} on={(b) => setOpt('update', b)} />

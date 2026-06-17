@@ -12,6 +12,7 @@ import (
 
 	"sb-ui/internal/executor"
 	"sb-ui/internal/jobs"
+	"sb-ui/internal/rclone"
 	"sb-ui/internal/store"
 )
 
@@ -21,12 +22,37 @@ import (
 // Built on runTransfer (rclone move), so it inherits flags/progress/stop.
 
 type uploaderRemote struct {
-	Name      string `json:"name"`     // rclone remote name
-	Dest      string `json:"dest"`     // path within the remote ("" = root)
-	CapPerDay string `json:"cap"`      // size/24h, "" = unlimited (e.g. "700G")
-	GapMin    int    `json:"gap_min"`  // min minutes between uses of this remote
-	Bwlimit   string `json:"bwlimit"`  // e.g. "40M"
-	Tpslimit  int    `json:"tpslimit"` // teldrive ban-avoidance
+	TaskID    string `json:"task_id"`   // run this saved transfer Task (reuses its op/items/dst/flags); "" = raw move below
+	Name      string `json:"name"`      // ledger key + display label (rclone remote name, or task label)
+	Dest      string `json:"dest"`      // raw mode: path within the remote ("" = root)
+	CapPerDay string `json:"cap"`       // bytes/24h, "" = unlimited (gdrive 750G); teldrive often blank
+	CapFiles  int    `json:"cap_files"` // files/24h, 0 = unlimited (teldrive rate/ban dimension)
+	GapMin    int    `json:"gap_min"`   // min minutes between uses of this remote
+	Bwlimit   string `json:"bwlimit"`   // raw mode bandwidth, e.g. "40M"
+	Tpslimit  int    `json:"tpslimit"`  // raw mode teldrive ban-avoidance
+}
+
+// parseCapBytes reads a per-day byte cap. A bare number is treated as GB (the UI
+// labels the field "Cap GB / day"); a unit-suffixed value (700G, 2T) parses as-is.
+// Empty → 0 (unlimited).
+func parseCapBytes(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	if c := s[len(s)-1]; c >= '0' && c <= '9' {
+		s += "G"
+	}
+	return int64(parseSize(s))
+}
+
+// remoteKey is the ledger key for a destination: tasks are tracked by ID (a task
+// may target the same remote as a raw entry), raw entries by remote name.
+func remoteKey(r uploaderRemote) string {
+	if r.TaskID != "" {
+		return "task:" + r.TaskID
+	}
+	return r.Name
 }
 
 type uploaderConfig struct {
@@ -46,16 +72,19 @@ type uploaderConfig struct {
 type ledgerEvent struct {
 	At    time.Time `json:"at"`
 	Bytes int64     `json:"bytes"`
+	Files int       `json:"files"`
 }
 type ledgerRemote struct {
-	Events     []ledgerEvent `json:"events"`
-	LastUpload time.Time     `json:"last_upload"`
+	Events      []ledgerEvent `json:"events"`
+	LastUpload  time.Time     `json:"last_upload"`
+	PausedUntil time.Time     `json:"paused_until,omitempty"` // set on FLOOD_WAIT/429 — skip until elapsed
 }
 
 const (
-	uploaderCfgRel    = "cache/uploader.json"
-	uploaderLedgerRel = "cache/uploader_ledger.json"
-	uploaderWindow    = 24 * time.Hour
+	uploaderCfgRel     = "cache/uploader.json"
+	uploaderLedgerRel  = "cache/uploader_ledger.json"
+	uploaderWindow     = 24 * time.Hour
+	uploaderFloodPause = 60 * time.Minute // cooldown after a rate-limit/ban hit
 )
 
 var (
@@ -88,8 +117,8 @@ func ensureUploader() { // under upMu
 	upLoaded = true
 }
 
-func usedInWindow(name string, now time.Time) int64 {
-	lr := ledger[name]
+func usedInWindow(led map[string]*ledgerRemote, name string, now time.Time) int64 {
+	lr := led[name]
 	if lr == nil {
 		return 0
 	}
@@ -102,56 +131,105 @@ func usedInWindow(name string, now time.Time) int64 {
 	return sum
 }
 
-func recordUpload(name string, bytes int64, now time.Time) {
-	lr := ledger[name]
+func usedFilesInWindow(led map[string]*ledgerRemote, name string, now time.Time) int {
+	lr := led[name]
+	if lr == nil {
+		return 0
+	}
+	var sum int
+	for _, e := range lr.Events {
+		if now.Sub(e.At) < uploaderWindow {
+			sum += e.Files
+		}
+	}
+	return sum
+}
+
+// ledgerAdd prunes the 24h window then appends an upload event (shared by the live
+// ledger and the dry-run simulator so both account identically).
+func ledgerAdd(led map[string]*ledgerRemote, name string, bytes int64, files int, now time.Time) {
+	lr := led[name]
 	if lr == nil {
 		lr = &ledgerRemote{}
-		ledger[name] = lr
+		led[name] = lr
 	}
-	// prune old then append
 	kept := lr.Events[:0]
 	for _, e := range lr.Events {
 		if now.Sub(e.At) < uploaderWindow {
 			kept = append(kept, e)
 		}
 	}
-	lr.Events = append(kept, ledgerEvent{At: now, Bytes: bytes})
+	lr.Events = append(kept, ledgerEvent{At: now, Bytes: bytes, Files: files})
 	lr.LastUpload = now
+}
+
+func recordUpload(name string, bytes int64, files int, now time.Time) {
+	ledgerAdd(ledger, name, bytes, files, now)
 	store.WriteJSON(uploaderLedgerRel, ledger)
 }
 
-// pickRemote chooses an eligible remote (cap not hit, cooldown elapsed) by strategy.
+// pauseRemote benches a remote after a rate-limit/ban hit so the picker skips it.
+func pauseRemote(name string, until time.Time) {
+	lr := ledger[name]
+	if lr == nil {
+		lr = &ledgerRemote{}
+		ledger[name] = lr
+	}
+	lr.PausedUntil = until
+	store.WriteJSON(uploaderLedgerRel, ledger)
+}
+
+// pickRemote chooses an eligible remote from the live config/ledger.
 func pickRemote(now time.Time) (*uploaderRemote, int64) {
+	r, free, _ := selectRemote(ucfg.Remotes, ledger, ucfg.Strategy, &rrIndex, now)
+	return r, free
+}
+
+// selectRemote is the pure remote-picker: given a set of remotes, a ledger, the
+// strategy and a round-robin cursor, it returns the chosen remote + remaining cap
+// bytes (-1 = unlimited), or (nil, 0, reason) when none is eligible. Shared by the
+// live uploader and the dry-run simulator so both behave identically.
+func selectRemote(remotes []uploaderRemote, led map[string]*ledgerRemote, strategy string, rr *int, now time.Time) (*uploaderRemote, int64, string) {
 	type cand struct {
 		r    uploaderRemote
-		free int64 // remaining cap bytes; -1 = unlimited
-		used int64
+		free int64
 	}
 	var cands []cand
-	for _, r := range ucfg.Remotes {
-		if r.Name == "" {
+	reason := "no remotes configured"
+	for _, r := range remotes {
+		if r.Name == "" && r.TaskID == "" {
 			continue
 		}
+		key := remoteKey(r)
+		if lr := led[key]; lr != nil && now.Before(lr.PausedUntil) {
+			reason = "all remotes cooling down (rate-limit pause)"
+			continue // benched after a flood/429 hit
+		}
 		if r.GapMin > 0 {
-			if lr := ledger[r.Name]; lr != nil && now.Sub(lr.LastUpload) < time.Duration(r.GapMin)*time.Minute {
+			if lr := led[key]; lr != nil && now.Sub(lr.LastUpload) < time.Duration(r.GapMin)*time.Minute {
+				reason = "all remotes within gap cooldown"
 				continue
 			}
 		}
-		used := usedInWindow(r.Name, now)
+		if r.CapFiles > 0 && usedFilesInWindow(led, key, now) >= r.CapFiles {
+			reason = "all remotes hit their daily caps"
+			continue // hit the daily file/request budget (teldrive rate dimension)
+		}
+		used := usedInWindow(led, key, now)
 		free := int64(-1)
-		if c := r.CapPerDay; strings.TrimSpace(c) != "" {
-			capB := int64(parseSize(c))
+		if capB := parseCapBytes(r.CapPerDay); capB > 0 {
 			if used >= capB {
+				reason = "all remotes hit their daily caps"
 				continue
 			}
 			free = capB - used
 		}
-		cands = append(cands, cand{r, free, used})
+		cands = append(cands, cand{r, free})
 	}
 	if len(cands) == 0 {
-		return nil, 0
+		return nil, 0, reason
 	}
-	switch ucfg.Strategy {
+	switch strategy {
 	case "most_free":
 		sort.SliceStable(cands, func(i, j int) bool {
 			fi, fj := cands[i].free, cands[j].free
@@ -163,13 +241,13 @@ func pickRemote(now time.Time) (*uploaderRemote, int64) {
 			}
 			return fi > fj
 		})
-		return &cands[0].r, cands[0].free
+		return &cands[0].r, cands[0].free, ""
 	case "round_robin":
-		rrIndex = (rrIndex + 1) % len(cands)
-		return &cands[rrIndex].r, cands[rrIndex].free
+		*rr = (*rr + 1) % len(cands)
+		return &cands[*rr].r, cands[*rr].free, ""
 	default: // lru — least recently used
 		sort.SliceStable(cands, func(i, j int) bool {
-			li, lj := ledger[cands[i].r.Name], ledger[cands[j].r.Name]
+			li, lj := led[remoteKey(cands[i].r)], led[remoteKey(cands[j].r)]
 			var ti, tj time.Time
 			if li != nil {
 				ti = li.LastUpload
@@ -179,7 +257,7 @@ func pickRemote(now time.Time) (*uploaderRemote, int64) {
 			}
 			return ti.Before(tj)
 		})
-		return &cands[0].r, cands[0].free
+		return &cands[0].r, cands[0].free, ""
 	}
 }
 
@@ -224,6 +302,26 @@ func duBytes(path string) int64 {
 	return 0
 }
 
+// Seams (overridden in tests to drive the full cycle without rclone/du).
+var (
+	measureSource = duBytes
+
+	// uploadRunner performs the move and reports what moved + whether the run hit a
+	// provider rate-limit (FLOOD_WAIT/429), so the cycle can pause that remote.
+	uploadRunner = func(label, op string, items []transferItem, dst string, opts transferOpts) (int64, int, bool) {
+		j := jobs.Create(label, op)
+		runTransfer(j.ID, op, items, dst, false, opts)
+		var moved int64
+		var files int
+		statsMu.Lock()
+		if s := statsStore[j.ID]; s != nil {
+			moved, files = s.Bytes, s.Transfers
+		}
+		statsMu.Unlock()
+		return moved, files, floodHit(j.ID)
+	}
+)
+
 // uploaderCheck runs one cycle: measure the source, and if it's over threshold,
 // move it to the next eligible remote (blocking — uploads run one at a time).
 func uploaderCheck() {
@@ -242,7 +340,7 @@ func uploaderCheck() {
 		upMu.Unlock()
 		return
 	}
-	size := duBytes(cfg.Source)
+	size := measureSource(cfg.Source)
 	thr := int64(parseSize(cfg.Threshold))
 
 	upMu.Lock()
@@ -258,11 +356,30 @@ func uploaderCheck() {
 		upMu.Unlock()
 		return
 	}
-	upLastMsg = "uploading to " + r.Name
+	upLastMsg = "uploading via " + r.Name
 	upMu.Unlock()
 
-	opts := transferOpts{Bwlimit: r.Bwlimit, Tpslimit: r.Tpslimit, Exclude: cfg.Excludes}
-	opts.Extra = []extraFlag{{Flag: "--cutoff-mode", Value: "cautious"}}
+	// Resolve what to run: a saved Task (reuses its op/items/dst/flags so we don't
+	// re-implement transfer config here) or a raw move of the staging source.
+	op := "move"
+	items := []transferItem{{Path: cfg.Source, IsDir: true}}
+	dst := r.Name + ":" + strings.TrimPrefix(r.Dest, "/")
+	var opts transferOpts
+	if r.TaskID != "" {
+		t, ok := findTask(r.TaskID)
+		if !ok {
+			upMu.Lock()
+			upLastMsg = "task not found for " + r.Name
+			upMu.Unlock()
+			return
+		}
+		op, items, dst, opts = t.Op, t.Items, t.Dst, t.Opts
+	} else {
+		opts = transferOpts{Bwlimit: r.Bwlimit, Tpslimit: r.Tpslimit}
+	}
+	// Layer the uploader's safety knobs on top of the task/raw options.
+	opts.Exclude = append(append([]string{}, opts.Exclude...), cfg.Excludes...)
+	opts.Extra = append(opts.Extra, extraFlag{Flag: "--cutoff-mode", Value: "cautious"})
 	if free > 0 { // cap the run to the remaining daily allowance (whole files only)
 		opts.Extra = append(opts.Extra, extraFlag{Flag: "--max-transfer", Value: strconv.FormatInt(free, 10)})
 	}
@@ -272,19 +389,17 @@ func uploaderCheck() {
 	if cfg.DeleteEmptySrc {
 		opts.Extra = append(opts.Extra, extraFlag{Flag: "--delete-empty-src-dirs", Value: ""})
 	}
-	dest := r.Name + ":" + strings.TrimPrefix(r.Dest, "/")
-	j := jobs.Create("uploader: "+cfg.Source+" → "+dest, "move")
-	runTransfer(j.ID, "move", []transferItem{{Path: cfg.Source, IsDir: true}}, dest, false, opts)
+	moved, files, flood := uploadRunner("uploader: "+transferLabel(op, items, dst), op, items, dst, opts)
 
-	moved := int64(0)
-	statsMu.Lock()
-	if s := statsStore[j.ID]; s != nil {
-		moved = s.Bytes
-	}
-	statsMu.Unlock()
+	now = time.Now()
 	upMu.Lock()
-	recordUpload(r.Name, moved, time.Now())
-	upLastMsg = "uploaded " + humanBytes(moved) + " to " + r.Name
+	recordUpload(remoteKey(*r), moved, files, now)
+	if flood { // rate-limited/banned — bench this remote so the next cycle picks another
+		pauseRemote(remoteKey(*r), now.Add(uploaderFloodPause))
+		upLastMsg = "rate-limited on " + r.Name + " — paused " + uploaderFloodPause.String() + " (moved " + humanBytes(moved) + ")"
+	} else {
+		upLastMsg = "uploaded " + humanBytes(moved) + " / " + strconv.Itoa(files) + " files via " + r.Name
+	}
 	upMu.Unlock()
 }
 
@@ -345,14 +460,21 @@ func uploaderStatus(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now()
 	remotes := make([]map[string]any, 0, len(ucfg.Remotes))
 	for _, r := range ucfg.Remotes {
-		used := usedInWindow(r.Name, now)
-		var last any
-		if lr := ledger[r.Name]; lr != nil && !lr.LastUpload.IsZero() {
-			last = lr.LastUpload.UTC().Format(time.RFC3339)
+		key := remoteKey(r)
+		used := usedInWindow(ledger, key, now)
+		var last, paused any
+		if lr := ledger[key]; lr != nil {
+			if !lr.LastUpload.IsZero() {
+				last = lr.LastUpload.UTC().Format(time.RFC3339)
+			}
+			if now.Before(lr.PausedUntil) {
+				paused = lr.PausedUntil.UTC().Format(time.RFC3339)
+			}
 		}
 		remotes = append(remotes, map[string]any{
-			"name": r.Name, "cap": r.CapPerDay, "used_today": humanBytes(used),
-			"used_bytes": used, "last_upload": last,
+			"name": r.Name, "task_id": r.TaskID, "cap": r.CapPerDay, "used_today": humanBytes(used),
+			"used_bytes": used, "cap_files": r.CapFiles, "files_today": usedFilesInWindow(ledger, key, now),
+			"last_upload": last, "paused_until": paused,
 		})
 	}
 	resp := map[string]any{
@@ -370,4 +492,282 @@ func uploaderStatus(w http.ResponseWriter, _ *http.Request) {
 func uploaderRun(w http.ResponseWriter, _ *http.Request) {
 	go uploaderCheck()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// nextWindowOpen returns the next time the upload window opens at/after now (now
+// itself if no window is configured or we're already inside it).
+func nextWindowOpen(from, until string, now time.Time) time.Time {
+	f := hm(from)
+	if f < 0 || inWindow(from, until, now) {
+		return now
+	}
+	y, m, d := now.Date()
+	t := time.Date(y, m, d, f/60, f%60, 0, 0, now.Location())
+	if !t.After(now) {
+		t = t.Add(24 * time.Hour)
+	}
+	return t
+}
+
+// nextEligible returns the soonest time some remote regains capacity (a 24h window
+// slot frees up) or comes off a rate-limit pause, so the drain can skip the idle
+// gap in one hop instead of stepping through every check interval.
+func nextEligible(cfg uploaderConfig, led map[string]*ledgerRemote, now time.Time) time.Time {
+	best := time.Time{}
+	consider := func(t time.Time) {
+		if t.After(now) && (best.IsZero() || t.Before(best)) {
+			best = t
+		}
+	}
+	for _, r := range cfg.Remotes {
+		if r.Name == "" && r.TaskID == "" {
+			continue
+		}
+		key := remoteKey(r)
+		lr := led[key]
+		if lr == nil {
+			return now // a fresh remote is eligible right now
+		}
+		t := now
+		if now.Before(lr.PausedUntil) {
+			t = lr.PausedUntil
+		}
+		capped := false
+		if capB := parseCapBytes(r.CapPerDay); capB > 0 && usedInWindow(led, key, now) >= capB {
+			capped = true
+		}
+		if r.CapFiles > 0 && usedFilesInWindow(led, key, now) >= r.CapFiles {
+			capped = true
+		}
+		if capped {
+			var oldest time.Time
+			for _, e := range lr.Events {
+				if now.Sub(e.At) < uploaderWindow && (oldest.IsZero() || e.At.Before(oldest)) {
+					oldest = e.At
+				}
+			}
+			if !oldest.IsZero() {
+				if ft := oldest.Add(uploaderWindow); ft.After(t) {
+					t = ft
+				}
+			}
+		}
+		consider(t)
+	}
+	return best
+}
+
+func confInt(p map[string]string, key string) int {
+	if p == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(p[key]))
+	return n
+}
+
+func remoteOfDst(dst string) string {
+	if i := strings.Index(dst, ":"); i > 0 && !strings.HasPrefix(dst, "/") {
+		return dst[:i]
+	}
+	return dst
+}
+
+// simRate estimates a remote's aggregate upload throughput (bytes/sec) for the
+// timeline. A task bwlimit caps it directly. Otherwise throughput is concurrency ×
+// per-connection speed, matching how rclone/teldrive actually push data: `transfers`
+// files in parallel (task, rclone default 4) × `upload_concurrency` channels per
+// file (rclone.conf, default 4) × the assumed per-connection speed. tpslimit is a
+// request-rate ban guard, not a throughput knob, so it never sets the speed here.
+func simRate(r uploaderRemote, conf map[string]map[string]string, perConn int64) (rate int64, src string, limited bool) {
+	var bw int64
+	transfers := 0
+	remoteName := r.Name
+	if r.TaskID != "" {
+		if t, ok := findTask(r.TaskID); ok {
+			bw = int64(parseSize(t.Opts.Bwlimit))
+			transfers = t.Opts.Transfers
+			remoteName = remoteOfDst(t.Dst)
+		}
+	} else {
+		bw = int64(parseSize(r.Bwlimit))
+	}
+	if bw > 0 {
+		return bw, "bwlimit", true
+	}
+	if transfers <= 0 {
+		transfers = 4 // rclone default
+	}
+	conc := confInt(conf[remoteName], "upload_concurrency")
+	if conc <= 0 {
+		conc = 4 // rclone default
+	}
+	streams := int64(transfers * conc)
+	return streams * perConn, strconv.Itoa(transfers) + "×" + strconv.Itoa(conc) + " streams", true
+}
+
+// uploaderSimulate dry-runs the rotation engine on the posted (unsaved) config with
+// a throwaway ledger — no real uploads, the live ledger is untouched. It DRAINS a
+// given backlog of data across the remotes, honouring per-day caps, gaps, the
+// window and rate-limit pauses, and returns a compact move-by-move timeline so you
+// can see how the spread plays out and how long it takes.
+func uploaderSimulate(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Total       string          `json:"total"`        // backlog to upload, e.g. "3000G"
+		AvgFile     string          `json:"avg_file"`     // average file size, e.g. "5G" (derives file counts)
+		Scenario    string          `json:"scenario"`     // "" | flood | offline | flaky
+		FloodRemote string          `json:"flood_remote"` // target remote for flood/offline scenarios
+		PerConn     string          `json:"per_conn"`     // assumed per-connection speed, e.g. "5M"
+		Config      *uploaderConfig `json:"config"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+
+	total := int64(parseSize(body.Total))
+	if total <= 0 {
+		total = 2 << 40 // 2 TiB
+	}
+	avg := int64(parseSize(body.AvgFile))
+	if avg <= 0 {
+		avg = 5 << 30 // 5 GiB
+	}
+	perConn := int64(parseSize(body.PerConn))
+	if perConn <= 0 {
+		perConn = 5 << 20 // 5 MiB/s per connection
+	}
+	conf, _ := rclone.Remotes(rcloneConfPath()) // for per-remote upload_concurrency
+
+	var cfg uploaderConfig
+	if body.Config != nil && len(body.Config.Remotes) > 0 {
+		cfg = *body.Config
+	} else {
+		upMu.Lock()
+		ensureUploader()
+		cfg = ucfg
+		upMu.Unlock()
+	}
+	if cfg.Strategy == "" {
+		cfg.Strategy = "lru"
+	}
+	iv := time.Duration(cfg.IntervalMinutes) * time.Minute
+	if iv <= 0 {
+		iv = 15 * time.Minute
+	}
+
+	// scenario: a remote going entirely offline drops out of rotation
+	if body.Scenario == "offline" && body.FloodRemote != "" {
+		kept := make([]uploaderRemote, 0, len(cfg.Remotes))
+		for _, r := range cfg.Remotes {
+			if r.Name != body.FloodRemote {
+				kept = append(kept, r)
+			}
+		}
+		cfg.Remotes = kept
+	}
+
+	led := map[string]*ledgerRemote{}
+	rr := 0
+	start := nextWindowOpen(cfg.AllowedFrom, cfg.AllowedUntil, time.Now())
+	now := start
+	remaining := total
+
+	steps := []map[string]any{}
+	done := false
+	moveCount := 0
+	for iter := 0; iter < 5000; iter++ {
+		if remaining <= 0 {
+			done = true
+			break
+		}
+		// jump to the window opening if we're outside it
+		if open := nextWindowOpen(cfg.AllowedFrom, cfg.AllowedUntil, now); open.After(now) {
+			steps = append(steps, map[string]any{"kind": "wait", "at": now.Format(time.RFC3339), "until": open.Format(time.RFC3339), "note": "waited for upload window"})
+			now = open
+			continue
+		}
+		r, free, reason := selectRemote(cfg.Remotes, led, cfg.Strategy, &rr, now)
+		if r == nil {
+			nt := nextEligible(cfg, led, now)
+			if nt.IsZero() || !nt.After(now) {
+				steps = append(steps, map[string]any{"kind": "blocked", "at": now.Format(time.RFC3339), "note": reason})
+				break
+			}
+			steps = append(steps, map[string]any{"kind": "wait", "at": now.Format(time.RFC3339), "until": nt.Format(time.RFC3339), "note": reason + " — waiting for daily caps to reset"})
+			now = nt
+			continue
+		}
+		key := remoteKey(*r)
+		move := remaining
+		if free >= 0 && move > free { // cap-bounded: whole-file, never past the remaining allowance
+			move = free
+		}
+		if r.CapFiles > 0 { // also bound by the remaining file budget
+			if fb := int64(r.CapFiles-usedFilesInWindow(led, key, now)) * avg; fb > 0 && move > fb {
+				move = fb
+			}
+		}
+		files := int(move / avg)
+		if files < 1 {
+			files = 1
+		}
+		ledgerAdd(led, key, move, files, now)
+		remaining -= move
+		// How long this upload actually takes at the remote's rate (the next remote
+		// only starts after it finishes, plus the check interval). Unthrottled uploads
+		// have no config-known speed, so the daily cap is the only pacing.
+		rate, rateSrc, limited := simRate(*r, conf, perConn)
+		var dur time.Duration
+		step := map[string]any{
+			"kind": "move", "at": now.Format(time.RFC3339), "remote": r.Name, "task_id": r.TaskID,
+			"bytes": humanBytes(move), "files": files, "remaining": humanBytes(max64(remaining, 0)),
+		}
+		if limited && rate > 0 {
+			dur = time.Duration(move/rate) * time.Second
+			step["rate"] = humanBytes(rate) + "/s (" + rateSrc + ")"
+			step["took_min"] = int(dur.Minutes())
+		} else {
+			step["rate"] = rateSrc
+		}
+		if free >= 0 {
+			step["max_transfer"] = humanBytes(free)
+		}
+		moveCount++
+		flood := false
+		switch body.Scenario {
+		case "flaky": // every remote trips a rate-limit occasionally (every 3rd move)
+			flood = moveCount%3 == 0
+		default: // "flood" or legacy: only the chosen remote rate-limits
+			flood = body.FloodRemote != "" && r.Name == body.FloodRemote
+		}
+		if flood {
+			led[key].PausedUntil = now.Add(uploaderFloodPause)
+			step["paused"] = true
+			step["note"] = "rate-limited → paused " + uploaderFloodPause.String()
+		}
+		steps = append(steps, step)
+		now = now.Add(dur + iv) // upload time + gap before the next run
+	}
+
+	summary := []map[string]any{}
+	for _, r := range cfg.Remotes {
+		if r.Name == "" && r.TaskID == "" {
+			continue
+		}
+		key := remoteKey(r)
+		summary = append(summary, map[string]any{
+			"name": r.Name, "task_id": r.TaskID,
+			"bytes": humanBytes(usedInWindow(led, key, now)), "files": usedFilesInWindow(led, key, now),
+			"cap": r.CapPerDay, "cap_files": r.CapFiles,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"steps": steps, "summary": summary,
+		"total": humanBytes(total), "moved": humanBytes(total - max64(remaining, 0)),
+		"done": done, "elapsed_min": int(now.Sub(start).Minutes()),
+	})
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

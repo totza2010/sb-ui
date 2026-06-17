@@ -482,10 +482,26 @@ var (
 	statsMu    sync.Mutex
 	statsStore = map[string]*transferStats{}
 	startStore = map[string]string{} // jobID -> started RFC3339 (for live jobs)
+	floodStore = map[string]bool{}   // jobID -> hit a rate-limit/flood error (kept across stats updates)
 )
 
 func setStats(id string, s *transferStats) { statsMu.Lock(); statsStore[id] = s; statsMu.Unlock() }
-func setStart(id, t string)                { statsMu.Lock(); startStore[id] = t; statsMu.Unlock() }
+
+// markFlood / floodHit track whether a job tripped a provider rate-limit so the
+// uploader can pause that remote (Telegram FLOOD_WAIT, Drive 429/rateLimitExceeded).
+func markFlood(id string)     { statsMu.Lock(); floodStore[id] = true; statsMu.Unlock() }
+func floodHit(id string) bool { statsMu.Lock(); defer statsMu.Unlock(); return floodStore[id] }
+
+func isFloodMsg(m string) bool {
+	m = strings.ToLower(m)
+	return strings.Contains(m, "flood_wait") ||
+		strings.Contains(m, "too many requests") ||
+		strings.Contains(m, "toomanyrequests") ||
+		strings.Contains(m, "ratelimitexceeded") ||
+		strings.Contains(m, "userratelimitexceeded") ||
+		strings.Contains(m, " 429 ") || strings.Contains(m, "(429)") || strings.Contains(m, "error 429")
+}
+func setStart(id, t string) { statsMu.Lock(); startStore[id] = t; statsMu.Unlock() }
 
 // transferSummary is the final snapshot persisted when a transfer job ends, so
 // completed jobs still show their stats + timing after a restart.
@@ -679,6 +695,9 @@ func streamTransfer(ctx context.Context, jobID string, args []string) (int, erro
 			}
 			if rec.Msg != "" {
 				jobs.PushLog(jobID, rec.Msg)
+				if isFloodMsg(rec.Msg) {
+					markFlood(jobID)
+				}
 			}
 		} else {
 			jobs.PushLog(jobID, line)
