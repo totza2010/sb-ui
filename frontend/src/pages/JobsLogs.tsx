@@ -5,7 +5,7 @@ import { LogStream } from '@/components/LogStream'
 import { Loader2 } from 'lucide-react'
 
 const statusVariant: Record<Job['status'], 'default' | 'success' | 'destructive' | 'secondary'> = {
-  pending: 'secondary', running: 'default', completed: 'success', failed: 'destructive',
+  pending: 'secondary', running: 'default', completed: 'success', failed: 'destructive', stopped: 'secondary',
 }
 
 export function JobsLogs() {

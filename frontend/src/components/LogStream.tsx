@@ -12,14 +12,23 @@ const statusVariant: Record<JobStatus, 'default' | 'success' | 'destructive' | '
   running: 'default',
   completed: 'success',
   failed: 'destructive',
+  stopped: 'secondary',
 }
 
 export function LogStream({ jobId }: Props) {
   const { lines, status } = useJobSocket(jobId)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const stick = useRef(true)
 
+  // Auto-scroll only when the user is already at the bottom, so they can scroll
+  // up to read without being yanked back down on every new line.
+  const onScroll = () => {
+    const el = boxRef.current
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = boxRef.current
+    if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [lines])
 
   if (!jobId) return null
@@ -33,7 +42,7 @@ export function LogStream({ jobId }: Props) {
           {status}
         </Badge>
       </div>
-      <div className="bg-background border border-border rounded-md p-3 h-96 overflow-y-auto font-mono text-xs leading-5">
+      <div ref={boxRef} onScroll={onScroll} className="bg-background border border-border rounded-md p-3 h-96 overflow-y-auto font-mono text-xs leading-5">
         {lines.length === 0 ? (
           <span className="text-muted-foreground">Waiting for output...</span>
         ) : (
@@ -41,7 +50,6 @@ export function LogStream({ jobId }: Props) {
             <div key={i}>{renderLine(line)}</div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   )
@@ -74,6 +82,7 @@ function clsFromCodes(spec: string): string {
 const clean = (t: string) => t.replace(ANSI_OTHER, '')
 
 function renderLine(line: string) {
+  if (!line) return null
   if (!line.includes('\x1b[')) {
     return <span className={lineColor(line)}>{line}</span>
   }

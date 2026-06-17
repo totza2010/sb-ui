@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-export type JobStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type JobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'stopped'
 
 export function useJobSocket(jobId: string | null) {
   const [lines, setLines] = useState<string[]>([])
@@ -27,7 +27,7 @@ export function useJobSocket(jobId: string | null) {
       if (!active) return
       try {
         const msg = JSON.parse(e.data)
-        if (msg.type === 'log') {
+        if (msg.type === 'log' && typeof msg.line === 'string') {
           setLines((prev) => [...prev, msg.line])
         } else if (msg.type === 'status') {
           setStatus(msg.status)

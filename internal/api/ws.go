@@ -35,6 +35,15 @@ func jobWS(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	}
+	// Send the current status so late subscribers (opening an already-finished or
+	// stopped job) see the real state instead of the client's default "running".
+	if d, ok := jobs.JobDict(id); ok {
+		if st, _ := d["status"].(string); st != "" {
+			if err := wsjson.Write(ctx, c, jobs.Msg{Type: "status", Status: st}); err != nil {
+				return
+			}
+		}
+	}
 	for msg := range ch {
 		wctx, wcancel := context.WithTimeout(ctx, 10*time.Second)
 		err := wsjson.Write(wctx, c, msg)

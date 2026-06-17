@@ -203,21 +203,32 @@ func (e *SSHExecutor) RunStream(ctx context.Context, cmd []string, cwd string, p
 	lines := make(chan string, 64)
 	exit := make(chan int, 1)
 	go func() {
-		var reader io.Reader = stdout
+		// Read stdout + stderr concurrently. io.MultiReader would drain stdout
+		// fully before touching stderr, so a long-running command that logs to
+		// stderr (rclone's stats/progress) would show nothing until it exits.
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); streamLines(stdout, pty, lines) }()
 		if stderr != nil && !pty {
-			reader = io.MultiReader(stdout, stderr) // pty already merges
+			wg.Add(1)
+			go func() { defer wg.Done(); streamLines(stderr, false, lines) }()
 		}
-		streamLines(reader, pty, lines)
+		wg.Wait()
 		werr := sess.Wait()
 		sess.Close()
 		close(lines)
 		exit <- sshExit(werr)
 	}()
-	// Kill the session if the context is cancelled.
+	// Stop the session if the context is cancelled. Send SIGINT first so rclone
+	// (and friends) can shut down gracefully and clean up partial uploads; force
+	// kill only if it hasn't exited shortly after.
 	go func() {
 		<-ctx.Done()
-		_ = sess.Signal(ssh.SIGKILL)
-		_ = sess.Close()
+		_ = sess.Signal(ssh.SIGINT)
+		time.AfterFunc(8*time.Second, func() {
+			_ = sess.Signal(ssh.SIGKILL)
+			_ = sess.Close()
+		})
 	}()
 	return &Stream{Lines: lines, exit: exit}, nil
 }

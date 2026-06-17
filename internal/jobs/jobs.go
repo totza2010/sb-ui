@@ -128,7 +128,7 @@ func SetStatus(id, status string) {
 		default:
 		}
 	}
-	terminal := status == "completed" || status == "failed"
+	terminal := status == "completed" || status == "failed" || status == "stopped"
 	if terminal {
 		for ch := range j.subs {
 			close(ch)
@@ -153,7 +153,7 @@ func Subscribe(id string) (snapshot []string, ch chan Msg, cancel func(), ok boo
 	defer j.mu.Unlock()
 	snapshot = append([]string(nil), j.lines...)
 	ch = make(chan Msg, 256)
-	if j.Status == "completed" || j.Status == "failed" {
+	if j.Status == "completed" || j.Status == "failed" || j.Status == "stopped" {
 		ch <- Msg{Type: "status", Status: j.Status}
 		close(ch)
 		return snapshot, ch, func() {}, true

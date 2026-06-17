@@ -74,6 +74,33 @@ func Mount(r chi.Router) {
 
 	// rclone
 	r.Get("/api/rclone/remotes", rcloneRemotes)
+	r.Get("/api/rclone/ls", rcloneLs)
+	r.Post("/api/rclone/mkdir", rcloneMkdir)
+	r.Get("/api/rclone/providers", rcloneProviders)
+	r.Post("/api/rclone/transfer", rcloneTransfer)
+	r.Get("/api/transfers/{id}/stats", transferStatsHandler)
+	r.Post("/api/transfers/{id}/stop", stopTransfer)
+
+	// Transfer tasks (save / run / queue) + scheduler
+	r.Get("/api/tasks", listTasks)
+	r.Post("/api/tasks", createTask)
+	r.Put("/api/tasks/{id}", updateTask)
+	r.Delete("/api/tasks/{id}", deleteTask)
+	r.Post("/api/tasks/{id}/run", runTaskNow)
+	r.Post("/api/tasks/{id}/queue", queueTaskNow)
+	r.Post("/api/tasks/{id}/toggle", toggleTask)
+
+	// Transfer queue manager
+	r.Get("/api/queue", queueState)
+	r.Post("/api/queue/start", queueStart)
+	r.Post("/api/queue/stop", queueStop)
+	r.Post("/api/queue/purge", queuePurge)
+	r.Post("/api/queue/{id}/remove", queueRemove)
+	r.Post("/api/queue/{id}/up", queueMove(-1))
+	r.Post("/api/queue/{id}/down", queueMove(1))
+
+	startScheduler()
+
 	r.Get("/api/rclone/status", rcloneStatus)
 	r.Get("/api/rclone/logs", rcloneLogs)
 	r.Get("/api/rclone/mount-templates", mountTemplates)

@@ -75,7 +75,7 @@ export interface Job {
   id: string
   tag: string
   action: string
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped'
   created_at: string
   log_lines: number
 }
@@ -612,6 +612,71 @@ export const useCommitRole = () =>
   useMutation<{ job_id: string }, Error, RoleSpec>({
     mutationFn: (spec) => request('/roles/commit', { method: 'POST', body: JSON.stringify(spec) }),
   })
+
+export interface LsEntry { name: string; is_dir: boolean; size: number }
+export interface TransferItem { path: string; is_dir: boolean }
+export interface ExtraFlag { flag: string; value: string }
+export interface TransferOpts {
+  transfers?: number; checkers?: number; bwlimit?: string; tpslimit?: number; retries?: number
+  ignore_existing?: boolean; update?: boolean; create_empty_src_dirs?: boolean; no_traverse?: boolean; one_file_system?: boolean
+  fast_list?: boolean; compare?: 'checksum' | 'size-only' | 'ignore-size' | ''
+  sync_delete?: 'during' | 'after' | 'before' | ''
+  include?: string[]; exclude?: string[]
+  extra?: ExtraFlag[]
+}
+
+export interface FileStat { name: string; size: number; bytes: number; percentage: number; speed: number; speedAvg: number; eta: number }
+export interface TransferStats { bytes: number; totalBytes: number; speed: number; eta: number; transfers: number; totalTransfers: number; checks: number; totalChecks: number; elapsedTime: number; errors: number; transferring?: FileStat[]; started_at?: string; finished_at?: string }
+export const useTransferStats = (id: string | null, live: boolean) =>
+  useQuery<TransferStats>({
+    queryKey: ['transfer-stats', id],
+    queryFn: () => request(`/transfers/${id}/stats`),
+    enabled: !!id, // fetch once even for finished jobs (final summary persists)
+    refetchInterval: live ? 1000 : false,
+  })
+
+export interface FlagInfo { flag: string; help: string; type: string }
+export const useRcloneProviders = () =>
+  useQuery<{ global: FlagInfo[]; backends: Record<string, FlagInfo[]> }>({
+    queryKey: ['rclone-providers'],
+    queryFn: () => request('/rclone/providers'),
+    staleTime: 60 * 60_000,
+  })
+
+export const useRcloneTransfer = () =>
+  useMutation<{ job_id: string }, Error, { op: 'copy' | 'move' | 'sync'; items: TransferItem[]; dst: string; dry_run?: boolean; opts?: TransferOpts; queue?: boolean }>({
+    mutationFn: (b) => request('/rclone/transfer', { method: 'POST', body: JSON.stringify(b) }),
+  })
+
+export interface TransferTask {
+  id: string; name: string; op: 'copy' | 'move' | 'sync'
+  items: TransferItem[]; dst: string; dry_run?: boolean; opts?: TransferOpts
+  schedule?: string; disabled?: boolean; run_mode?: 'queue' | 'now'; created_at?: string; next_run?: string
+}
+type TaskInput = Omit<TransferTask, 'id' | 'created_at'>
+
+export const useTasks = () =>
+  useQuery<TransferTask[]>({ queryKey: ['tasks'], queryFn: () => request('/tasks'), refetchInterval: 5000 })
+export const useCreateTask = () =>
+  useMutation<TransferTask, Error, TaskInput>({ mutationFn: (t) => request('/tasks', { method: 'POST', body: JSON.stringify(t) }) })
+export const useUpdateTask = () =>
+  useMutation<TransferTask, Error, { id: string } & TaskInput>({ mutationFn: ({ id, ...t }) => request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify(t) }) })
+export const useDeleteTask = () =>
+  useMutation<{ ok: boolean }, Error, string>({ mutationFn: (id) => request(`/tasks/${id}`, { method: 'DELETE' }) })
+export const useStopTransfer = () =>
+  useMutation<{ ok: boolean }, Error, string>({ mutationFn: (id) => request(`/transfers/${id}/stop`, { method: 'POST' }) })
+export const useRunTask = () =>
+  useMutation<{ job_id: string }, Error, string>({ mutationFn: (id) => request(`/tasks/${id}/run`, { method: 'POST' }) })
+export const useQueueTask = () =>
+  useMutation<{ job_id: string }, Error, string>({ mutationFn: (id) => request(`/tasks/${id}/queue`, { method: 'POST' }) })
+export const useToggleTask = () =>
+  useMutation<TransferTask, Error, string>({ mutationFn: (id) => request(`/tasks/${id}/toggle`, { method: 'POST' }) })
+
+export interface QueueState { running: boolean; current: { job_id: string; label: string } | null; items: { job_id: string; label: string }[] }
+export const useQueue = () =>
+  useQuery<QueueState>({ queryKey: ['queue'], queryFn: () => request('/queue'), refetchInterval: 3000 })
+export const useQueueAction = () =>
+  useMutation<{ ok: boolean }, Error, string>({ mutationFn: (path) => request(`/queue${path}`, { method: 'POST' }) })
 
 export interface ModRole {
   name: string
