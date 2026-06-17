@@ -101,6 +101,12 @@ func Mount(r chi.Router) {
 
 	startScheduler()
 
+	// Smart Uploader (cloudplow++)
+	r.Get("/api/uploader", getUploader)
+	r.Put("/api/uploader", putUploader)
+	r.Get("/api/uploader/status", uploaderStatus)
+	r.Post("/api/uploader/run", uploaderRun)
+	startUploader()
 	r.Get("/api/rclone/status", rcloneStatus)
 	r.Get("/api/rclone/logs", rcloneLogs)
 	r.Get("/api/rclone/mount-templates", mountTemplates)

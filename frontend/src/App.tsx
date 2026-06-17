@@ -12,6 +12,7 @@ import { Inventory } from '@/pages/Inventory'
 import { Backup } from '@/pages/Backup'
 import { Files } from '@/pages/Files'
 import { Transfers } from '@/pages/Transfers'
+import { Uploader } from '@/pages/Uploader'
 import { ConnectionSetup } from '@/pages/ConnectionSetup'
 import { BackendOffline } from '@/components/BackendOffline'
 import { useSetupStatus } from '@/lib/api'
@@ -62,6 +63,7 @@ function AppInner() {
             <Route path="/backup" element={<Backup />} />
             <Route path="/files" element={<Files />} />
             <Route path="/transfers" element={<Transfers />} />
+            <Route path="/uploader" element={<Uploader />} />
             <Route path="/logs"   element={<JobsLogs />} />
           </Routes>
         </ErrorBoundary>
