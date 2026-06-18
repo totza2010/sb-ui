@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useUploader, useSaveUploader, useUploaderStatus, useUploaderRun, useUploaderSimulate, useTasks, type UploaderConfig, type UploaderRemote } from '@/lib/api'
+import { useUploader, useSaveUploader, useUploaderStatus, useUploaderRun, useUploaderSimulate, useUploaderCalibration, useTasks, type UploaderConfig, type UploaderRemote } from '@/lib/api'
 import { PathPicker } from '@/components/PathPicker'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -40,6 +40,7 @@ export function Uploader() {
   const { data: status } = useUploaderStatus()
   const { data: tasks } = useTasks()
   const sim = useUploaderSimulate()
+  const { data: calib } = useUploaderCalibration()
   const taskName = (id?: string) => tasks?.find((t) => t.id === id)?.name
   const capLabel = (c?: string) => !c ? '∞' : /[a-zA-Z]$/.test(c) ? c : `${c}G` // bare number = GB
   const [simTotal, setSimTotal] = useState('3000G')
@@ -219,7 +220,10 @@ export function Uploader() {
           <FlaskConical className="h-4 w-4 text-primary" />
           <h2 className="text-sm font-semibold text-foreground">Simulate rotation (dry-run)</h2>
         </div>
-        <p className="text-[11px] text-muted-foreground -mt-1">Drains a backlog across your <span className="text-foreground">current</span> remotes (no need to Save) — caps, gaps, window & rate-limit pauses included. Upload speed = task <span className="font-mono">bwlimit</span> if set, else <span className="font-mono">transfers × upload_concurrency</span> (from task + rclone.conf) × the per-connection speed below. tpslimit is a ban guard, not a speed. Nothing is uploaded.</p>
+        <p className="text-[11px] text-muted-foreground -mt-1">Drains a backlog across your <span className="text-foreground">current</span> remotes (no need to Save) — caps, gaps, window & rate-limit pauses included. Upload speed = task <span className="font-mono">bwlimit</span>, else <span className="font-mono">measured</span> throughput from past runs, else <span className="font-mono">transfers × upload_concurrency</span> × the per-connection speed below. Nothing is uploaded.</p>
+        {calib && calib.length > 0 && (
+          <p className="text-[11px] text-muted-foreground -mt-1">Measured: {calib.map((c) => `${c.remote} ~${c.avg_speed}/s${c.throttle_rate > 0 ? ` (${Math.round(c.throttle_rate * 100)}% throttled)` : ''}`).join(' · ')}</p>
+        )}
         <div className="flex flex-wrap items-end gap-2">
           <div className="space-y-1">
             <Label className="text-[10px] text-muted-foreground">Total to upload</Label>

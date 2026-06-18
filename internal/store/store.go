@@ -56,6 +56,13 @@ func ReadText(rel string) (string, bool) {
 	return s, true
 }
 
+// Remove deletes Base/rel (best-effort).
+func Remove(rel string) {
+	c, cancel := ctx()
+	defer cancel()
+	_, _, _ = executor.Get().Run(c, []string{"rm", "-f", Base + "/" + rel}, "")
+}
+
 func WriteText(rel, text string) { WriteTextAbs(Base+"/"+rel, text) }
 
 // WriteTextAbs writes text to an absolute path (creating parent dirs).

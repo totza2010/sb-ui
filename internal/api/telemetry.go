@@ -8,6 +8,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +70,7 @@ type telSummary struct {
 
 type telemetry struct {
 	JobID      string              `json:"job_id"`
+	TaskID     string              `json:"task_id"`
 	StartedAt  string              `json:"started_at"`
 	Dst        string              `json:"dst"`
 	Samples    []telSample         `json:"samples"`
@@ -95,10 +98,10 @@ var (
 
 // ── recorder ──────────────────────────────────────────────────────────────────
 
-func telStart(jobID, dst string) {
+func telStart(jobID, taskID, dst string) {
 	telMu.Lock()
 	telStore[jobID] = &telemetry{
-		JobID: jobID, Dst: dst, StartedAt: time.Now().UTC().Format(time.RFC3339),
+		JobID: jobID, TaskID: taskID, Dst: dst, StartedAt: time.Now().UTC().Format(time.RFC3339),
 		Files: map[string]*telFile{}, lastSample: -1, effEvery: 1, startNS: time.Now(),
 	}
 	telMu.Unlock()
@@ -240,7 +243,172 @@ func telFinish(jobID string) {
 		PerConnEst: t.peakSpeed / int64(streams), Concurrency: conc,
 	}
 	persistTelemetry(t)
+	if rn := remoteOfDst(t.Dst); rn != "" && !strings.HasPrefix(t.Dst, "/") {
+		profileRecord(rn, t.Summary.PerConnEst, t.Summary.AvgSpeed, t.Summary.Throttled)
+	}
 	delete(telStore, jobID) // drop from RAM; reads come from disk afterwards
+	go pruneTelemetry()
+}
+
+// ── per-remote profile (P3.3) — rolling stats from real runs, used to calibrate
+// the simulator (P3.2) and data-drive recommendations. ─────────────────────────
+
+type remoteRun struct {
+	At        string `json:"at"`
+	PerConn   int64  `json:"per_conn"`
+	AvgSpeed  int64  `json:"avg_speed"`
+	Throttled bool   `json:"throttled"`
+}
+type remoteProfile struct {
+	Remote string      `json:"remote"`
+	Runs   []remoteRun `json:"runs"` // newest last; capped
+}
+
+const (
+	profileDir  = "cache/remote_profile"
+	profileKeep = 20
+)
+
+func profileRel(remote string) string { return profileDir + "/" + remote + ".json" }
+
+func profileRecord(remote string, perConn, avgSpeed int64, throttled bool) {
+	var p remoteProfile
+	store.ReadJSON(profileRel(remote), &p)
+	p.Remote = remote
+	p.Runs = append(p.Runs, remoteRun{At: time.Now().UTC().Format(time.RFC3339), PerConn: perConn, AvgSpeed: avgSpeed, Throttled: throttled})
+	if len(p.Runs) > profileKeep {
+		p.Runs = p.Runs[len(p.Runs)-profileKeep:]
+	}
+	store.WriteJSON(profileRel(remote), p)
+}
+
+func loadProfile(remote string) (remoteProfile, bool) {
+	var p remoteProfile
+	store.ReadJSON(profileRel(remote), &p)
+	return p, len(p.Runs) > 0
+}
+
+func medianI64(v []int64) int64 {
+	if len(v) == 0 {
+		return 0
+	}
+	c := append([]int64(nil), v...)
+	sort.Slice(c, func(i, j int) bool { return c[i] < c[j] })
+	return c[len(c)/2]
+}
+
+// calibratedSpeed returns the median measured aggregate throughput (bytes/s) for a
+// remote from its recent runs, or 0 if we have no history.
+func calibratedSpeed(remote string) int64 {
+	p, ok := loadProfile(remote)
+	if !ok {
+		return 0
+	}
+	var sp []int64
+	for _, r := range p.Runs {
+		if r.AvgSpeed > 0 {
+			sp = append(sp, r.AvgSpeed)
+		}
+	}
+	return medianI64(sp)
+}
+
+func uploaderCalibration(w http.ResponseWriter, _ *http.Request) {
+	upMu.Lock()
+	ensureUploader()
+	cfg := ucfg
+	upMu.Unlock()
+	out := []map[string]any{}
+	seen := map[string]bool{}
+	add := func(remote string) {
+		if remote == "" || seen[remote] {
+			return
+		}
+		seen[remote] = true
+		p, ok := loadProfile(remote)
+		if !ok {
+			return
+		}
+		var sp []int64
+		throttled := 0
+		for _, r := range p.Runs {
+			if r.AvgSpeed > 0 {
+				sp = append(sp, r.AvgSpeed)
+			}
+			if r.Throttled {
+				throttled++
+			}
+		}
+		out = append(out, map[string]any{
+			"remote": remote, "runs": len(p.Runs),
+			"avg_speed": humanBytes(medianI64(sp)), "avg_speed_bytes": medianI64(sp),
+			"throttle_rate": float64(throttled) / float64(len(p.Runs)),
+		})
+	}
+	for _, r := range cfg.Remotes {
+		if r.TaskID != "" {
+			if t, ok := findTask(r.TaskID); ok {
+				add(remoteOfDst(t.Dst))
+			}
+		} else {
+			add(r.Name)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// removeTelemetry deletes one job's telemetry files + in-RAM record.
+func removeTelemetry(id string) {
+	telMu.Lock()
+	delete(telStore, id)
+	telMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	dir := store.Base + "/" + telDir
+	executor.Get().Run(ctx, []string{"rm", "-f", dir + "/" + id + ".sum.json", dir + "/" + id + ".series.json.gz"}, "")
+}
+
+// deleteTelemetry removes one job's telemetry (manual cleanup).
+func deleteTelemetry(w http.ResponseWriter, req *http.Request) {
+	removeTelemetry(chi.URLParam(req, "id"))
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// purgeTelemetry clears all recorded telemetry.
+func purgeTelemetry(w http.ResponseWriter, _ *http.Request) {
+	telMu.Lock()
+	telStore = map[string]*telemetry{}
+	telMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dir := store.Base + "/" + telDir
+	executor.Get().Run(ctx, []string{"sh", "-c", "rm -f " + dir + "/*.sum.json " + dir + "/*.series.json.gz"}, "")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+const telKeep = 200 // keep at most this many jobs' telemetry on disk
+
+// pruneTelemetry caps the telemetry dir at telKeep jobs, deleting the oldest
+// (by mtime) sum+series pairs so /opt doesn't grow without bound.
+func pruneTelemetry() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dir := store.Base + "/" + telDir
+	// list .sum.json oldest-first; drop all but the newest telKeep.
+	rc, out, _ := executor.Get().Run(ctx, []string{
+		"sh", "-c", "ls -1t " + dir + "/*.sum.json 2>/dev/null | tail -n +" + strconv.Itoa(telKeep+1),
+	}, "")
+	if rc != 0 {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		p := strings.TrimSpace(line)
+		if !strings.HasSuffix(p, ".sum.json") {
+			continue
+		}
+		id := strings.TrimSuffix(path.Base(p), ".sum.json")
+		executor.Get().Run(ctx, []string{"rm", "-f", p, dir + "/" + id + ".series.json.gz"}, "")
+	}
 }
 
 // ── persistence (compact, split, gzipped) ─────────────────────────────────────
@@ -264,6 +432,7 @@ type telSeries struct {
 
 type telSum struct {
 	JobID     string              `json:"job_id"`
+	TaskID    string              `json:"task_id"`
 	StartedAt string              `json:"started_at"`
 	Dst       string              `json:"dst"`
 	Files     map[string]*telFile `json:"files"`
@@ -272,7 +441,7 @@ type telSum struct {
 }
 
 func persistTelemetry(t *telemetry) {
-	sum := telSum{JobID: t.JobID, StartedAt: t.StartedAt, Dst: t.Dst, Files: t.Files, Events: t.Events, Summary: t.Summary}
+	sum := telSum{JobID: t.JobID, TaskID: t.TaskID, StartedAt: t.StartedAt, Dst: t.Dst, Files: t.Files, Events: t.Events, Summary: t.Summary}
 	if b, err := json.Marshal(sum); err == nil { // compact (no indent)
 		store.WriteText(sumRel(t.JobID), string(b))
 	}
@@ -351,7 +520,7 @@ func getTelemetry(jobID string) (*telemetry, bool) {
 		return nil, false
 	}
 	out := &telemetry{
-		JobID: sum.JobID, StartedAt: sum.StartedAt, Dst: sum.Dst,
+		JobID: sum.JobID, TaskID: sum.TaskID, StartedAt: sum.StartedAt, Dst: sum.Dst,
 		Files: sum.Files, Events: sum.Events, Summary: sum.Summary,
 	}
 	if b, ok := readGz(seriesRel(jobID)); ok {
@@ -480,7 +649,7 @@ func transferTelemetry(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"job_id": t.JobID, "started_at": t.StartedAt, "dst": t.Dst,
+		"job_id": t.JobID, "task_id": t.TaskID, "started_at": t.StartedAt, "dst": t.Dst,
 		"samples": t.Samples, "files": t.Files, "events": t.Events,
 		"summary": t.Summary, "findings": analyzeTelemetry(t),
 	})

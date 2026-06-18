@@ -55,7 +55,7 @@ func uploadSim(t *testing.T, cfg uploaderConfig, srcSize, perBytes int64, perFil
 
 	calls := &[]run{}
 	measureSource = func(string) int64 { return srcSize }
-	uploadRunner = func(_, _ string, _ []transferItem, dst string, opts transferOpts) (int64, int, bool) {
+	uploadRunner = func(_, _, _ string, _ []transferItem, dst string, opts transferOpts) (int64, int, bool) {
 		name := dst
 		for i := 0; i < len(dst); i++ {
 			if dst[i] == ':' {

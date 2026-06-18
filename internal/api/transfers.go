@@ -355,7 +355,7 @@ func rcloneTransfer(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	j := jobs.Create(transferLabel(b.Op, b.Items, b.Dst), b.Op)
-	go runTransfer(j.ID, b.Op, b.Items, b.Dst, b.DryRun, b.Opts)
+	go runTransfer(j.ID, "", b.Op, b.Items, b.Dst, b.DryRun, b.Opts)
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
 }
 
@@ -384,11 +384,11 @@ func stopTransfer(w http.ResponseWriter, req *http.Request) {
 
 // runTransfer executes a transfer (one job, items sequentially), streaming output
 // into the job log and live stats. Shared by immediate runs, tasks, and the queue.
-func runTransfer(jobID, op string, items []transferItem, dst string, dryRun bool, opts transferOpts) {
+func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dryRun bool, opts transferOpts) {
 	jobs.SetStatus(jobID, "running")
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	setStart(jobID, startedAt)
-	telStart(jobID, dst)
+	telStart(jobID, taskID, dst)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelMu.Lock()
 	cancelFns[jobID] = cancel

@@ -189,7 +189,7 @@ func runTaskNow(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst), t.Op)
-	go runTransfer(j.ID, t.Op, t.Items, t.Dst, t.DryRun, t.Opts)
+	go runTransfer(j.ID, t.ID, t.Op, t.Items, t.Dst, t.DryRun, t.Opts)
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
 }
 
@@ -245,7 +245,7 @@ func startQueueWorker() {
 					queueCurrent, queueCurrentLabel = it.JobID, it.Label
 					qMu.Unlock()
 
-					runTransfer(it.JobID, it.task.Op, it.task.Items, it.task.Dst, it.task.DryRun, it.task.Opts)
+					runTransfer(it.JobID, it.task.ID, it.task.Op, it.task.Items, it.task.Dst, it.task.DryRun, it.task.Opts)
 
 					qMu.Lock()
 					queueCurrent, queueCurrentLabel = "", ""
@@ -364,7 +364,7 @@ func startScheduler() {
 				for _, t := range due {
 					if t.RunMode == "now" {
 						j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst), t.Op)
-						go runTransfer(j.ID, t.Op, t.Items, t.Dst, t.DryRun, t.Opts)
+						go runTransfer(j.ID, t.ID, t.Op, t.Items, t.Dst, t.DryRun, t.Opts)
 					} else {
 						enqueueTask(t)
 					}

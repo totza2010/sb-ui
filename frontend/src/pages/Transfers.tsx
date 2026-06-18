@@ -3,7 +3,7 @@
  * watch them. Browsing remotes lives on the Files page (rclone group).
  */
 import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { useRcloneTransfer, useJobs, useRcloneRemotes, useRcloneProviders, useTransferStats, useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRunTask, useQueueTask, useToggleTask, useStopTransfer, useQueue, useQueueAction, useTransferTelemetry, type TransferOpts, type FlagInfo, type TransferTask, type TelSample } from '@/lib/api'
+import { useRcloneTransfer, useJobs, useRcloneRemotes, useRcloneProviders, useTransferStats, useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRunTask, useQueueTask, useToggleTask, useStopTransfer, useQueue, useQueueAction, useTransferTelemetry, useDeleteTelemetry, usePurgeTelemetry, useDeleteJob, useClearJobs, type TransferOpts, type FlagInfo, type TransferTask, type TelSample } from '@/lib/api'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -76,6 +76,8 @@ export function Transfers() {
   const invalidateTasks = () => qc.invalidateQueries({ queryKey: ['tasks'] })
 
   // Queue manager
+  const purgeTel = usePurgeTelemetry()
+  const clearJobs = useClearJobs()
   const { data: queue } = useQueue()
   const queueAction = useQueueAction()
   const invalidateQueue = () => qc.invalidateQueries({ queryKey: ['queue'] })
@@ -253,7 +255,25 @@ export function Transfers() {
       )}
 
       {/* Recent / active transfers (incl. queued = pending) */}
-      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Activity</p>
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Activity</p>
+        {transfers.length > 0 && (
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => purgeTel.mutate(undefined, { onSuccess: () => qc.invalidateQueries({ queryKey: ['telemetry'] }) })}
+              disabled={purgeTel.isPending}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive">
+              <Trash2 className="h-3 w-3" />Clear telemetry
+            </button>
+            <button
+              onClick={() => clearJobs.mutate(undefined, { onSuccess: () => { qc.invalidateQueries({ queryKey: ['jobs'] }); qc.invalidateQueries({ queryKey: ['telemetry'] }) } })}
+              disabled={clearJobs.isPending}
+              className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive">
+              <Trash2 className="h-3 w-3" />Clear finished
+            </button>
+          </div>
+        )}
+      </div>
       <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
         {transfers.length === 0 && (
           <div className="px-4 py-10 text-center text-sm text-muted-foreground">
@@ -490,7 +510,13 @@ function ActivityRow({ job, autoOpen }: { job: { id: string; tag: string; status
   const [out, setOut] = useState(false)
   const [ana, setAna] = useState(false)
   const stop = useStopTransfer()
+  const delJob = useDeleteJob()
+  const qc = useQueryClient()
   const active = job.status === 'running'
+  // verdict dot (P3.4): fetch telemetry once for finished jobs (shares the query
+  // with the Analysis panel below, so no extra request when it's open).
+  const { data: tel } = useTransferTelemetry(job.id, !active, false)
+  const worst = (tel?.findings ?? []).reduce((acc, f) => f.severity === 'bad' ? 'bad' : f.severity === 'warn' && acc !== 'bad' ? 'warn' : acc, '' as string)
   useEffect(() => { if (autoOpen) setOpen(true) }, [autoOpen])
   return (
     <div>
@@ -504,8 +530,16 @@ function ActivityRow({ job, autoOpen }: { job: { id: string; tag: string; status
             <Square className="h-3 w-3" />Stop
           </span>
         )}
+        {worst && <span title={worst === 'bad' ? 'Issues — see Analysis' : 'Warnings — see Analysis'} className={cn('h-2 w-2 rounded-full shrink-0', worst === 'bad' ? 'bg-destructive' : 'bg-amber-500')} />}
         <Badge variant={statusVariant[job.status]}>{job.status}</Badge>
         <span className="text-[11px] text-muted-foreground shrink-0 w-32 text-right">{new Date(job.created_at).toLocaleString()}</span>
+        {!active && (
+          <span role="button" tabIndex={0} title="Delete from history"
+            onClick={(e) => { e.stopPropagation(); delJob.mutate(job.id, { onSuccess: () => { qc.invalidateQueries({ queryKey: ['jobs'] }); qc.invalidateQueries({ queryKey: ['telemetry', job.id] }) } }) }}
+            className="text-muted-foreground hover:text-destructive shrink-0">
+            <Trash2 className="h-3.5 w-3.5" />
+          </span>
+        )}
       </button>
       {open && (
         <div className="px-4 pb-3 space-y-2">
@@ -539,16 +573,38 @@ const evStyle: Record<string, string> = {
 }
 function TelemetryPanel({ jobId, running }: { jobId: string; running: boolean }) {
   const { data, isLoading, isError } = useTransferTelemetry(jobId, true, running)
+  const { data: tasks = [] } = useTasks()
+  const updateTask = useUpdateTask()
+  const del = useDeleteTelemetry()
+  const qc = useQueryClient()
+  const [applied, setApplied] = useState<number | null>(null)
   if (isLoading) return <p className="text-xs text-muted-foreground px-1">Loading analysis…</p>
   if (isError || !data) return <p className="text-xs text-muted-foreground px-1">No telemetry recorded for this job.</p>
   const s = data.summary
   const findings = data.findings ?? []
+  const task = tasks.find((t) => t.id === data.task_id)
+  const applySuggest = (suggest: Record<string, number>, i: number) => {
+    if (!task) return
+    updateTask.mutate({ ...task, opts: { ...task.opts, ...suggest } }, {
+      onSuccess: () => { setApplied(i); qc.invalidateQueries({ queryKey: ['tasks'] }) },
+    })
+  }
   const events = data.events ?? []
   const samples = data.samples ?? []
   const files = Object.values(data.files ?? {}).sort((a, b) => b.size - a.size)
   return (
     <div className="space-y-3 rounded-md border border-border bg-card p-3">
-      {running && <p className="text-[11px] text-muted-foreground italic">Recording… full analysis appears when the job finishes.</p>}
+      <div className="flex items-center justify-between">
+        {running ? <p className="text-[11px] text-muted-foreground italic">Recording… full analysis appears when the job finishes.</p> : <span />}
+        {!running && (
+          <button
+            onClick={() => del.mutate(jobId, { onSuccess: () => qc.invalidateQueries({ queryKey: ['telemetry', jobId] }) })}
+            disabled={del.isPending}
+            className="flex items-center gap-1 text-[11px] text-destructive hover:underline shrink-0">
+            <Trash2 className="h-3 w-3" />Delete telemetry
+          </button>
+        )}
+      </div>
 
       {findings.length > 0 && (
         <div className="space-y-1.5">
@@ -556,7 +612,16 @@ function TelemetryPanel({ jobId, running }: { jobId: string; running: boolean })
             <div key={i} className={cn('rounded-md border px-3 py-2 text-xs', sevStyle[f.severity])}>
               <p className="font-medium text-foreground">{f.title}</p>
               <p className="text-muted-foreground mt-0.5">{f.detail}</p>
-              {f.suggest && <p className="mt-1 font-mono text-[11px] text-foreground">suggest: {Object.entries(f.suggest).map(([k, v]) => `${k}=${v}`).join(' · ')}</p>}
+              {f.suggest && (
+                <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-[11px] text-foreground">{Object.entries(f.suggest).map(([k, v]) => `${k}=${v}`).join(' · ')}</span>
+                  {applied === i
+                    ? <span className="text-[11px] text-success">✓ applied to task</span>
+                    : task
+                      ? <Button size="sm" variant="outline" className="h-6 text-[11px]" disabled={updateTask.isPending} onClick={() => applySuggest(f.suggest!, i)}>Apply to “{task.name}”</Button>
+                      : <span className="text-[11px] text-muted-foreground italic">save as a task to apply</span>}
+                </div>
+              )}
             </div>
           ))}
         </div>

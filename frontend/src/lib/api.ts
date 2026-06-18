@@ -641,9 +641,17 @@ export interface TelFile { name: string; size: number; bytes: number; speed_avg:
 export interface TelEvent { t: number; kind: 'flood' | 'auth' | 'quota' | 'checksum' | 'network' | 'retry' | 'error'; msg: string }
 export interface TelSummary { duration_sec: number; bytes: number; files: number; avg_speed: number; peak_speed: number; peak_active: number; errors: number; flood_hits: number; throttled: boolean; per_conn_est: number; concurrency: number }
 export interface TelFinding { severity: 'good' | 'warn' | 'bad'; title: string; detail: string; suggest?: Record<string, number> }
-export interface TelemetryData { job_id: string; started_at: string; dst: string; samples: TelSample[]; files: Record<string, TelFile>; events: TelEvent[]; summary?: TelSummary; findings: TelFinding[] }
+export interface TelemetryData { job_id: string; task_id?: string; started_at: string; dst: string; samples: TelSample[]; files: Record<string, TelFile>; events: TelEvent[]; summary?: TelSummary; findings: TelFinding[] }
 export const useTransferTelemetry = (id: string | null, enabled: boolean, live = false) =>
   useQuery<TelemetryData>({ queryKey: ['telemetry', id], queryFn: () => request(`/transfers/${id}/telemetry`), enabled: !!id && enabled, retry: false, refetchInterval: live ? 2500 : false })
+export const useDeleteTelemetry = () =>
+  useMutation<{ ok: boolean }, Error, string>({ mutationFn: (id) => request(`/transfers/${id}/telemetry`, { method: 'DELETE' }) })
+export const usePurgeTelemetry = () =>
+  useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/telemetry/purge', { method: 'POST' }) })
+export const useDeleteJob = () =>
+  useMutation<{ ok: boolean }, Error, string>({ mutationFn: (id) => request(`/jobs/${id}`, { method: 'DELETE' }) })
+export const useClearJobs = () =>
+  useMutation<{ ok: boolean; removed: number }, Error, void>({ mutationFn: () => request('/jobs/clear', { method: 'POST' }) })
 
 export interface FlagInfo { flag: string; help: string; type: string }
 export const useRcloneProviders = () =>
@@ -705,6 +713,9 @@ export const useUploaderRun = () =>
 export interface SimStep { kind: 'move' | 'wait' | 'blocked'; at: string; until?: string; remote?: string; task_id?: string; bytes?: string; files?: number; max_transfer?: string; remaining?: string; rate?: string; took_min?: number; paused?: boolean; note?: string }
 export interface SimRemote { name: string; task_id?: string; bytes: string; files: number; cap: string; cap_files: number }
 export interface SimResult { steps: SimStep[]; summary: SimRemote[]; total: string; moved: string; done: boolean; elapsed_min: number }
+export interface CalibrationRemote { remote: string; runs: number; avg_speed: string; avg_speed_bytes: number; throttle_rate: number }
+export const useUploaderCalibration = () =>
+  useQuery<CalibrationRemote[]>({ queryKey: ['uploader-calibration'], queryFn: () => request('/uploader/calibration'), staleTime: 60_000 })
 export const useUploaderSimulate = () =>
   useMutation<SimResult, Error, { total: string; avg_file: string; per_conn: string; scenario: string; flood_remote: string; config: UploaderConfig }>({
     mutationFn: (b) => request('/uploader/simulate', { method: 'POST', body: JSON.stringify(b) }),

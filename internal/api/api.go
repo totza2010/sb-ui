@@ -28,7 +28,9 @@ func Mount(r chi.Router) {
 	r.Post("/api/self/update", selfUpdate)
 
 	r.Get("/api/jobs", listJobs)
+	r.Post("/api/jobs/clear", clearJobs)
 	r.Get("/api/jobs/{id}", getJob)
+	r.Delete("/api/jobs/{id}", deleteJob)
 
 	// System dashboard
 	r.Get("/api/system", systemInfo)
@@ -80,6 +82,8 @@ func Mount(r chi.Router) {
 	r.Post("/api/rclone/transfer", rcloneTransfer)
 	r.Get("/api/transfers/{id}/stats", transferStatsHandler)
 	r.Get("/api/transfers/{id}/telemetry", transferTelemetry)
+	r.Delete("/api/transfers/{id}/telemetry", deleteTelemetry)
+	r.Post("/api/telemetry/purge", purgeTelemetry)
 	r.Post("/api/transfers/{id}/stop", stopTransfer)
 
 	// Transfer tasks (save / run / queue) + scheduler
@@ -108,6 +112,7 @@ func Mount(r chi.Router) {
 	r.Get("/api/uploader/status", uploaderStatus)
 	r.Post("/api/uploader/run", uploaderRun)
 	r.Post("/api/uploader/simulate", uploaderSimulate)
+	r.Get("/api/uploader/calibration", uploaderCalibration)
 	startUploader()
 	r.Get("/api/rclone/status", rcloneStatus)
 	r.Get("/api/rclone/logs", rcloneLogs)
@@ -173,6 +178,24 @@ func getJob(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, d)
+}
+
+func deleteJob(w http.ResponseWriter, req *http.Request) {
+	id := chi.URLParam(req, "id")
+	if !jobs.Delete(id) {
+		http.Error(w, "Job not found or still running", http.StatusConflict)
+		return
+	}
+	removeTelemetry(id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func clearJobs(w http.ResponseWriter, _ *http.Request) {
+	ids := jobs.ClearFinished()
+	for _, id := range ids {
+		removeTelemetry(id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": len(ids)})
 }
 
 func installApp(action string) http.HandlerFunc {

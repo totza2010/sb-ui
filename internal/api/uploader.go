@@ -308,9 +308,9 @@ var (
 
 	// uploadRunner performs the move and reports what moved + whether the run hit a
 	// provider rate-limit (FLOOD_WAIT/429), so the cycle can pause that remote.
-	uploadRunner = func(label, op string, items []transferItem, dst string, opts transferOpts) (int64, int, bool) {
+	uploadRunner = func(label, taskID, op string, items []transferItem, dst string, opts transferOpts) (int64, int, bool) {
 		j := jobs.Create(label, op)
-		runTransfer(j.ID, op, items, dst, false, opts)
+		runTransfer(j.ID, taskID, op, items, dst, false, opts)
 		var moved int64
 		var files int
 		statsMu.Lock()
@@ -389,7 +389,7 @@ func uploaderCheck() {
 	if cfg.DeleteEmptySrc {
 		opts.Extra = append(opts.Extra, extraFlag{Flag: "--delete-empty-src-dirs", Value: ""})
 	}
-	moved, files, flood := uploadRunner("uploader: "+transferLabel(op, items, dst), op, items, dst, opts)
+	moved, files, flood := uploadRunner("uploader: "+transferLabel(op, items, dst), r.TaskID, op, items, dst, opts)
 
 	now = time.Now()
 	upMu.Lock()
@@ -578,7 +578,7 @@ func remoteOfDst(dst string) string {
 // files in parallel (task, rclone default 4) × `upload_concurrency` channels per
 // file (rclone.conf, default 4) × the assumed per-connection speed. tpslimit is a
 // request-rate ban guard, not a throughput knob, so it never sets the speed here.
-func simRate(r uploaderRemote, conf map[string]map[string]string, perConn int64) (rate int64, src string, limited bool) {
+func simRate(r uploaderRemote, conf map[string]map[string]string, calib map[string]int64, perConn int64) (rate int64, src string, limited bool) {
 	var bw int64
 	transfers := 0
 	remoteName := r.Name
@@ -593,6 +593,9 @@ func simRate(r uploaderRemote, conf map[string]map[string]string, perConn int64)
 	}
 	if bw > 0 {
 		return bw, "bwlimit", true
+	}
+	if m := calib[remoteName]; m > 0 { // measured from this remote's real runs (P3.2)
+		return m, "measured", true
 	}
 	if transfers <= 0 {
 		transfers = 4 // rclone default
@@ -634,6 +637,8 @@ func uploaderSimulate(w http.ResponseWriter, req *http.Request) {
 		perConn = 5 << 20 // 5 MiB/s per connection
 	}
 	conf, _ := rclone.Remotes(rcloneConfPath()) // for per-remote upload_concurrency
+	// measured throughput per remote from real runs (auto-calibration, P3.2)
+	calib := map[string]int64{}
 
 	var cfg uploaderConfig
 	if body.Config != nil && len(body.Config.Remotes) > 0 {
@@ -661,6 +666,20 @@ func uploaderSimulate(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		cfg.Remotes = kept
+	}
+
+	for _, r := range cfg.Remotes { // fill measured throughput per destination remote
+		rn := r.Name
+		if r.TaskID != "" {
+			if t, ok := findTask(r.TaskID); ok {
+				rn = remoteOfDst(t.Dst)
+			}
+		}
+		if rn != "" {
+			if sp := calibratedSpeed(rn); sp > 0 {
+				calib[rn] = sp
+			}
+		}
 	}
 
 	led := map[string]*ledgerRemote{}
@@ -713,7 +732,7 @@ func uploaderSimulate(w http.ResponseWriter, req *http.Request) {
 		// How long this upload actually takes at the remote's rate (the next remote
 		// only starts after it finishes, plus the check interval). Unthrottled uploads
 		// have no config-known speed, so the daily cap is the only pacing.
-		rate, rateSrc, limited := simRate(*r, conf, perConn)
+		rate, rateSrc, limited := simRate(*r, conf, calib, perConn)
 		var dur time.Duration
 		step := map[string]any{
 			"kind": "move", "at": now.Format(time.RFC3339), "remote": r.Name, "task_id": r.TaskID,

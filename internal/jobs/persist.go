@@ -41,6 +41,57 @@ func persist(id string) {
 	store.WriteJSON("logs/index.json", out)
 }
 
+func removeFromIndex(rm map[string]bool) {
+	var idx []histEntry
+	store.ReadJSON("logs/index.json", &idx)
+	out := make([]histEntry, 0, len(idx))
+	for _, e := range idx {
+		if !rm[e.ID] {
+			out = append(out, e)
+		}
+	}
+	store.WriteJSON("logs/index.json", out)
+}
+
+// Delete removes a finished job from memory + persisted history (log + index).
+// Running/pending jobs are left alone. Returns false if not deletable.
+func Delete(id string) bool {
+	mu.Lock()
+	j := jobs[id]
+	if j == nil || j.Status == "running" || j.Status == "pending" {
+		mu.Unlock()
+		return false
+	}
+	delete(jobs, id)
+	mu.Unlock()
+	removeFromIndex(map[string]bool{id: true})
+	store.Remove("logs/" + id + ".log")
+	return true
+}
+
+// ClearFinished removes all terminal jobs; returns the deleted IDs.
+func ClearFinished() []string {
+	mu.Lock()
+	rm := map[string]bool{}
+	for id, j := range jobs {
+		if j.Status == "completed" || j.Status == "failed" || j.Status == "stopped" {
+			rm[id] = true
+			delete(jobs, id)
+		}
+	}
+	mu.Unlock()
+	if len(rm) == 0 {
+		return nil
+	}
+	removeFromIndex(rm)
+	ids := make([]string, 0, len(rm))
+	for id := range rm {
+		store.Remove("logs/" + id + ".log")
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // LoadHistory restores past jobs from the persisted index on startup.
 func LoadHistory() {
 	var idx []histEntry
