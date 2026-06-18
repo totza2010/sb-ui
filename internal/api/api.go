@@ -79,6 +79,7 @@ func Mount(r chi.Router) {
 	r.Get("/api/rclone/providers", rcloneProviders)
 	r.Post("/api/rclone/transfer", rcloneTransfer)
 	r.Get("/api/transfers/{id}/stats", transferStatsHandler)
+	r.Get("/api/transfers/{id}/telemetry", transferTelemetry)
 	r.Post("/api/transfers/{id}/stop", stopTransfer)
 
 	// Transfer tasks (save / run / queue) + scheduler

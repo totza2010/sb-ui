@@ -388,6 +388,7 @@ func runTransfer(jobID, op string, items []transferItem, dst string, dryRun bool
 	jobs.SetStatus(jobID, "running")
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	setStart(jobID, startedAt)
+	telStart(jobID, dst)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancelMu.Lock()
 	cancelFns[jobID] = cancel
@@ -450,6 +451,7 @@ func runTransfer(jobID, op string, items []transferItem, dst string, dryRun bool
 		jobs.SetStatus(jobID, "completed")
 	}
 	saveSummary(jobID, startedAt, time.Now().UTC().Format(time.RFC3339))
+	telFinish(jobID)
 }
 
 // ── live transfer stats (per job) ─────────────────────────────────────────────
@@ -692,9 +694,11 @@ func streamTransfer(ctx context.Context, jobID string, args []string) (int, erro
 		if json.Unmarshal([]byte(line), &rec) == nil && (rec.Msg != "" || rec.Stats != nil) {
 			if rec.Stats != nil {
 				setStats(jobID, rec.Stats)
+				telOnStats(jobID, rec.Stats)
 			}
 			if rec.Msg != "" {
 				jobs.PushLog(jobID, rec.Msg)
+				telOnLog(jobID, rec.Msg)
 				if isFloodMsg(rec.Msg) {
 					markFlood(jobID)
 				}

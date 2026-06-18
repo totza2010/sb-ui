@@ -635,6 +635,16 @@ export const useTransferStats = (id: string | null, live: boolean) =>
     refetchInterval: live ? 1000 : false,
   })
 
+// Telemetry (P1): detailed per-job upload state + analysis findings.
+export interface TelSample { t: number; speed: number; bytes: number; active: number; errors: number }
+export interface TelFile { name: string; size: number; bytes: number; speed_avg: number }
+export interface TelEvent { t: number; kind: 'flood' | 'auth' | 'quota' | 'checksum' | 'network' | 'retry' | 'error'; msg: string }
+export interface TelSummary { duration_sec: number; bytes: number; files: number; avg_speed: number; peak_speed: number; peak_active: number; errors: number; flood_hits: number; throttled: boolean; per_conn_est: number; concurrency: number }
+export interface TelFinding { severity: 'good' | 'warn' | 'bad'; title: string; detail: string; suggest?: Record<string, number> }
+export interface TelemetryData { job_id: string; started_at: string; dst: string; samples: TelSample[]; files: Record<string, TelFile>; events: TelEvent[]; summary?: TelSummary; findings: TelFinding[] }
+export const useTransferTelemetry = (id: string | null, enabled: boolean, live = false) =>
+  useQuery<TelemetryData>({ queryKey: ['telemetry', id], queryFn: () => request(`/transfers/${id}/telemetry`), enabled: !!id && enabled, retry: false, refetchInterval: live ? 2500 : false })
+
 export interface FlagInfo { flag: string; help: string; type: string }
 export const useRcloneProviders = () =>
   useQuery<{ global: FlagInfo[]; backends: Record<string, FlagInfo[]> }>({

@@ -2,8 +2,8 @@
  * Transfers — pure transfer management: launch rclone copy/move/sync jobs and
  * watch them. Browsing remotes lives on the Files page (rclone group).
  */
-import { useEffect, useMemo, useState } from 'react'
-import { useRcloneTransfer, useJobs, useRcloneRemotes, useRcloneProviders, useTransferStats, useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRunTask, useQueueTask, useToggleTask, useStopTransfer, useQueue, useQueueAction, type TransferOpts, type FlagInfo, type TransferTask } from '@/lib/api'
+import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useRcloneTransfer, useJobs, useRcloneRemotes, useRcloneProviders, useTransferStats, useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRunTask, useQueueTask, useToggleTask, useStopTransfer, useQueue, useQueueAction, useTransferTelemetry, type TransferOpts, type FlagInfo, type TransferTask, type TelSample } from '@/lib/api'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -488,6 +488,7 @@ export function Transfers() {
 function ActivityRow({ job, autoOpen }: { job: { id: string; tag: string; status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped'; created_at: string }; autoOpen: boolean }) {
   const [open, setOpen] = useState(autoOpen)
   const [out, setOut] = useState(false)
+  const [ana, setAna] = useState(false)
   const stop = useStopTransfer()
   const active = job.status === 'running'
   useEffect(() => { if (autoOpen) setOpen(true) }, [autoOpen])
@@ -509,12 +510,163 @@ function ActivityRow({ job, autoOpen }: { job: { id: string; tag: string; status
       {open && (
         <div className="px-4 pb-3 space-y-2">
           <TransferProgress jobId={job.id} running={job.status === 'running'} />
-          <button onClick={() => setOut((s) => !s)} className="flex items-center gap-1 text-xs font-medium text-foreground">
-            {out ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}Show output
-          </button>
+          <div className="flex items-center gap-4">
+            <button onClick={() => setOut((s) => !s)} className="flex items-center gap-1 text-xs font-medium text-foreground">
+              {out ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}Show output
+            </button>
+            <button onClick={() => setAna((s) => !s)} className="flex items-center gap-1 text-xs font-medium text-foreground">
+              {ana ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}Analysis
+            </button>
+          </div>
           {out && <LogStream jobId={job.id} />}
+          {ana && <TelemetryPanel jobId={job.id} running={active} />}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── analysis panel (telemetry findings + summary + events) ────────────────────
+const sevStyle: Record<string, string> = {
+  good: 'border-success/40 bg-success/10',
+  warn: 'border-amber-500/40 bg-amber-500/10',
+  bad: 'border-destructive/40 bg-destructive/10',
+}
+const evStyle: Record<string, string> = {
+  flood: 'text-amber-600 dark:text-amber-400', quota: 'text-amber-600 dark:text-amber-400',
+  auth: 'text-destructive', error: 'text-destructive', checksum: 'text-destructive',
+  network: 'text-muted-foreground', retry: 'text-muted-foreground',
+}
+function TelemetryPanel({ jobId, running }: { jobId: string; running: boolean }) {
+  const { data, isLoading, isError } = useTransferTelemetry(jobId, true, running)
+  if (isLoading) return <p className="text-xs text-muted-foreground px-1">Loading analysis…</p>
+  if (isError || !data) return <p className="text-xs text-muted-foreground px-1">No telemetry recorded for this job.</p>
+  const s = data.summary
+  const findings = data.findings ?? []
+  const events = data.events ?? []
+  const samples = data.samples ?? []
+  const files = Object.values(data.files ?? {}).sort((a, b) => b.size - a.size)
+  return (
+    <div className="space-y-3 rounded-md border border-border bg-card p-3">
+      {running && <p className="text-[11px] text-muted-foreground italic">Recording… full analysis appears when the job finishes.</p>}
+
+      {findings.length > 0 && (
+        <div className="space-y-1.5">
+          {findings.map((f, i) => (
+            <div key={i} className={cn('rounded-md border px-3 py-2 text-xs', sevStyle[f.severity])}>
+              <p className="font-medium text-foreground">{f.title}</p>
+              <p className="text-muted-foreground mt-0.5">{f.detail}</p>
+              {f.suggest && <p className="mt-1 font-mono text-[11px] text-foreground">suggest: {Object.entries(f.suggest).map(([k, v]) => `${k}=${v}`).join(' · ')}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {s && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <Metric label="Avg speed" value={`${hBytes(s.avg_speed)}/s`} />
+          <Metric label="Peak speed" value={`${hBytes(s.peak_speed)}/s`} />
+          <Metric label="Per-conn (est)" value={`${hBytes(s.per_conn_est)}/s`} sub={`÷ ${s.concurrency} conn`} />
+          <Metric label="Errors / floods" value={`${s.errors} / ${s.flood_hits}`} />
+        </div>
+      )}
+
+      {samples.length >= 2 && <SpeedChart samples={samples} events={events} />}
+
+      {files.length > 0 && (
+        <div className="rounded-md border border-border divide-y divide-border max-h-48 overflow-y-auto">
+          <div className="flex items-center gap-2 px-2.5 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+            <span className="flex-1">File</span><span className="w-20 text-right">Size</span><span className="w-24 text-right">Avg speed</span>
+          </div>
+          {files.slice(0, 12).map((f, i) => (
+            <div key={i} className="flex items-center gap-2 px-2.5 py-1 text-[11px]">
+              <span className="flex-1 min-w-0 truncate text-foreground">{f.name}</span>
+              <span className="w-20 text-right text-muted-foreground tabular-nums">{hBytes(f.size)}</span>
+              <span className="w-24 text-right text-muted-foreground tabular-nums">{hBytes(f.speed_avg)}/s</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {events.length > 0 && (
+        <div className="rounded-md border border-border divide-y divide-border max-h-48 overflow-y-auto">
+          {events.map((e, i) => (
+            <div key={i} className="flex items-start gap-2 px-2.5 py-1 text-[11px]">
+              <span className="w-12 shrink-0 text-muted-foreground/70 tabular-nums">{e.t}s</span>
+              <span className={cn('w-16 shrink-0 font-medium', evStyle[e.kind] ?? 'text-muted-foreground')}>{e.kind}</span>
+              <span className="min-w-0 flex-1 text-muted-foreground break-all">{e.msg}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {events.length === 0 && s && <p className="text-[11px] text-muted-foreground">No errors or rate-limits recorded — clean run.</p>}
+    </div>
+  )
+}
+function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-md border border-border bg-secondary/30 px-2.5 py-1.5">
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="text-sm font-medium text-foreground">{value}</p>
+      {sub && <p className="text-[10px] text-muted-foreground/70">{sub}</p>}
+    </div>
+  )
+}
+
+const evColor: Record<string, string> = {
+  flood: '#f59e0b', quota: '#f59e0b', auth: '#ef4444', error: '#ef4444', checksum: '#ef4444',
+  network: '#94a3b8', retry: '#94a3b8',
+}
+const fmtTsec = (sec: number) => sec >= 3600 ? `${Math.floor(sec / 3600)}h${Math.floor((sec % 3600) / 60)}m` : sec >= 60 ? `${Math.floor(sec / 60)}m${sec % 60}s` : `${sec}s`
+// SpeedChart — inline SVG area chart of aggregate speed over time, with vertical
+// markers where classified events occurred. Hover to read the nearest sample.
+function SpeedChart({ samples, events }: { samples: TelSample[]; events: { t: number; kind: string }[] }) {
+  const [hi, setHi] = useState<number | null>(null)
+  const W = 800, H = 140, padL = 8, padR = 8, padT = 10, padB = 18
+  const maxT = Math.max(1, ...samples.map((s) => s.t))
+  const maxV = Math.max(1, ...samples.map((s) => s.speed))
+  const x = (t: number) => padL + (t / maxT) * (W - padL - padR)
+  const y = (v: number) => padT + (1 - v / maxV) * (H - padT - padB)
+  const line = samples.map((s, i) => `${i ? 'L' : 'M'}${x(s.t).toFixed(1)},${y(s.speed).toFixed(1)}`).join(' ')
+  const area = `${line} L${x(samples[samples.length - 1].t).toFixed(1)},${y(0).toFixed(1)} L${x(samples[0].t).toFixed(1)},${y(0).toFixed(1)} Z`
+
+  const onMove = (e: ReactMouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    const tt = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * maxT
+    let best = 0, bd = Infinity
+    for (let i = 0; i < samples.length; i++) { const d = Math.abs(samples[i].t - tt); if (d < bd) { bd = d; best = i } }
+    setHi(best)
+  }
+  const h = hi != null ? samples[hi] : null
+  const leftPct = h ? ((x(h.t) - padL) / (W - padL - padR)) * 100 : 0
+
+  return (
+    <div className="rounded-md border border-border bg-secondary/20 p-2">
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1">
+        <span>Speed over time</span>
+        <span className="tabular-nums">peak {hBytes(maxV)}/s · {fmtTsec(maxT)}</span>
+      </div>
+      <div className="relative" onMouseMove={onMove} onMouseLeave={() => setHi(null)}>
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-32" preserveAspectRatio="none">
+          <path d={area} fill="var(--primary, #3b82f6)" opacity={0.12} />
+          <path d={line} fill="none" stroke="var(--primary, #3b82f6)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+          {events.map((e, i) => (
+            <line key={i} x1={x(e.t)} x2={x(e.t)} y1={padT} y2={H - padB} stroke={evColor[e.kind] ?? '#94a3b8'} strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" opacity={0.8} />
+          ))}
+          <line x1={padL} x2={W - padR} y1={H - padB} y2={H - padB} stroke="currentColor" opacity={0.15} vectorEffect="non-scaling-stroke" />
+          {h && <>
+            <line x1={x(h.t)} x2={x(h.t)} y1={padT} y2={H - padB} stroke="currentColor" opacity={0.3} vectorEffect="non-scaling-stroke" />
+            <circle cx={x(h.t)} cy={y(h.speed)} r={3.5} fill="var(--primary, #3b82f6)" vectorEffect="non-scaling-stroke" />
+          </>}
+        </svg>
+        {h && (
+          <div className="pointer-events-none absolute top-0 -translate-x-1/2 rounded border border-border bg-popover px-2 py-1 text-[10px] shadow-sm whitespace-nowrap"
+            style={{ left: `${Math.max(6, Math.min(94, leftPct))}%` }}>
+            <span className="font-medium text-foreground">{hBytes(h.speed)}/s</span>
+            <span className="text-muted-foreground"> · {fmtTsec(h.t)} · {h.active} active{h.errors ? ` · ${h.errors} err` : ''}</span>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
