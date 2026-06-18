@@ -1,8 +1,8 @@
 import { NavLink } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { LayoutDashboard, Package, Settings, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container, ArrowRightLeft, CloudUpload } from 'lucide-react'
+import { LayoutDashboard, Package, Settings, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container, ArrowRightLeft, CloudUpload, Send } from 'lucide-react'
 import { cn } from '@/lib/cn'
-import { useSetupStatus } from '@/lib/api'
+import { useSetupStatus, useTeldriveRemotes } from '@/lib/api'
 import { SelfUpdate } from '@/components/SelfUpdate'
 import { SystemStatus } from '@/components/SystemStatus'
 
@@ -22,12 +22,18 @@ const nav = [
 export function Sidebar() {
   const qc = useQueryClient()
   const { data: status } = useSetupStatus()
+  const { data: td } = useTeldriveRemotes()
+
+  // tgDrive panel only appears when teldrive remotes are configured.
+  const base = (td?.remotes?.length ?? 0) > 0
+    ? [...nav.slice(0, -1), { to: '/tgdrive', label: 'tgDrive', icon: Send }, nav[nav.length - 1]]
+    : nav
 
   // Setup Wizard is only relevant on a fresh box. Once Saltbox is provisioned,
   // drop it from the nav — re-linking a different host is "Reconfigure connection".
   const items = status && !status.saltbox_configured
-    ? [...nav.slice(0, -1), { to: '/setup', label: 'Setup Wizard', icon: Wand2 }, nav[nav.length - 1]]
-    : nav
+    ? [...base.slice(0, -1), { to: '/setup', label: 'Setup Wizard', icon: Wand2 }, base[base.length - 1]]
+    : base
 
   return (
     <aside className="w-56 shrink-0 border-r border-border bg-card flex flex-col h-screen">

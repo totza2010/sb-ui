@@ -76,6 +76,23 @@ func fsList(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": resolved, "entries": entries, "exists": rc == 0})
 }
 
+// fsDu returns total size (du -sb) + file count for a disk folder.
+func fsDu(w http.ResponseWriter, req *http.Request) {
+	resolved := path.Clean(req.URL.Query().Get("path"))
+	if !underRoot(resolved, fsRoots) {
+		http.Error(w, "Path not allowed", http.StatusBadRequest)
+		return
+	}
+	bytes := duBytes(resolved)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	count := int64(0)
+	if _, out, _ := executor.Get().Run(ctx, []string{"sh", "-c", "find " + shArg(resolved) + " -type f 2>/dev/null | wc -l"}, ""); out != "" {
+		count, _ = strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"bytes": bytes, "count": count, "human": humanBytes(bytes)})
+}
+
 func fsReadFile(w http.ResponseWriter, req *http.Request) {
 	resolved := path.Clean(req.URL.Query().Get("path"))
 	if !underRoot(resolved, fsRoots) {

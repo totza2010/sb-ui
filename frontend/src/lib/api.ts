@@ -653,6 +653,13 @@ export const useDeleteJob = () =>
 export const useClearJobs = () =>
   useMutation<{ ok: boolean; removed: number }, Error, void>({ mutationFn: () => request('/jobs/clear', { method: 'POST' }) })
 
+// teldrive (tgdrive) panel — only active when teldrive remotes exist.
+export const useTeldriveRemotes = () =>
+  useQuery<{ remotes: string[] }>({ queryKey: ['teldrive-remotes'], queryFn: () => request('/teldrive/remotes'), staleTime: 60_000 })
+export interface TdResult { remote: string; name: string; is_dir: boolean; size: number; human: string; category: string; modified: string; dir: string }
+export const useTeldriveSearch = (q: string) =>
+  useQuery<{ results: TdResult[]; count: number; errors?: string[] }>({ queryKey: ['teldrive-search', q], queryFn: () => request(`/teldrive/search?q=${encodeURIComponent(q)}`), enabled: q.trim().length > 0 })
+
 export interface FlagInfo { flag: string; help: string; type: string }
 export const useRcloneProviders = () =>
   useQuery<{ global: FlagInfo[]; backends: Record<string, FlagInfo[]> }>({

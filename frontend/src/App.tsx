@@ -13,6 +13,7 @@ import { Backup } from '@/pages/Backup'
 import { Files } from '@/pages/Files'
 import { Transfers } from '@/pages/Transfers'
 import { Uploader } from '@/pages/Uploader'
+import { TgDrive } from '@/pages/TgDrive'
 import { ConnectionSetup } from '@/pages/ConnectionSetup'
 import { BackendOffline } from '@/components/BackendOffline'
 import { useSetupStatus } from '@/lib/api'
@@ -64,6 +65,7 @@ function AppInner() {
             <Route path="/files" element={<Files />} />
             <Route path="/transfers" element={<Transfers />} />
             <Route path="/uploader" element={<Uploader />} />
+            <Route path="/tgdrive" element={<TgDrive />} />
             <Route path="/logs"   element={<JobsLogs />} />
           </Routes>
         </ErrorBoundary>
