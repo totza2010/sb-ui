@@ -6,7 +6,7 @@
  */
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useTeldriveRemotes, useTeldriveSearch } from '@/lib/api'
+import { useTeldriveRemotes, useTeldriveSearch, useTeldriveStorage } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Search, FolderOpen, Send, Loader2 } from 'lucide-react'
@@ -17,8 +17,10 @@ export function TgDrive() {
   const [input, setInput] = useState('')
   const [q, setQ] = useState('')
   const { data, isFetching } = useTeldriveSearch(q)
+  const { data: storage } = useTeldriveStorage()
   const nav = useNavigate()
   const results = data?.results ?? []
+  const maxRemote = Math.max(1, ...(storage?.remotes ?? []).map((r) => r.bytes))
 
   return (
     <div className="p-6 space-y-4">
@@ -45,6 +47,36 @@ export function TgDrive() {
             </Button>
           </form>
           <p className="text-[11px] text-muted-foreground">Remotes: {remotes.join(' · ')}</p>
+
+          {/* cross-account storage — what teldrive's own UI can't show (all accounts at once) */}
+          {storage && storage.total_bytes > 0 && (
+            <div className="rounded-lg border border-border bg-card p-3 space-y-3">
+              <div className="flex items-baseline justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Storage across {storage.remotes.length} accounts</p>
+                <p className="text-sm text-foreground">{storage.total_human} · {storage.total_files.toLocaleString()} files</p>
+              </div>
+              {/* aggregated by category */}
+              <div className="flex flex-wrap gap-1.5">
+                {storage.categories.map((c) => (
+                  <span key={c.category} className="rounded-md border border-border bg-secondary/30 px-2 py-0.5 text-[11px]">
+                    <span className="capitalize text-foreground">{c.category}</span> <span className="text-muted-foreground">{c.human} · {c.files.toLocaleString()}</span>
+                  </span>
+                ))}
+              </div>
+              {/* per-remote bars */}
+              <div className="space-y-1.5">
+                {storage.remotes.map((r) => (
+                  <div key={r.remote} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-32 shrink-0 truncate text-foreground">{r.remote}</span>
+                    <div className="flex-1 h-2 rounded bg-secondary overflow-hidden">
+                      <div className="h-full bg-primary" style={{ width: `${(r.bytes / maxRemote) * 100}%` }} />
+                    </div>
+                    <span className="w-28 shrink-0 text-right text-muted-foreground tabular-nums">{r.human} · {r.files.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {(data?.errors?.length ?? 0) > 0 && (
             <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">

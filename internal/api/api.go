@@ -92,6 +92,7 @@ func Mount(r chi.Router) {
 	// teldrive (tgdrive) panel — only meaningful when teldrive remotes exist
 	r.Get("/api/teldrive/remotes", teldriveRemotesHandler)
 	r.Get("/api/teldrive/search", teldriveSearch)
+	r.Get("/api/teldrive/storage", teldriveStorage)
 	r.Get("/api/rclone/providers", rcloneProviders)
 	r.Post("/api/rclone/transfer", rcloneTransfer)
 	r.Get("/api/transfers/{id}/stats", transferStatsHandler)

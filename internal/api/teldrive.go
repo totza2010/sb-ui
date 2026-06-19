@@ -94,6 +94,70 @@ type tdResult struct {
 	Dir      string `json:"dir"` // containing folder (for jump-to-folder)
 }
 
+// teldriveStorage aggregates per-category storage across ALL teldrive remotes —
+// the enhancement teldrive's own web UI can't do (it shows one account at a time).
+func teldriveStorage(w http.ResponseWriter, _ *http.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+
+	type catJSON struct {
+		Category   string `json:"category"`
+		TotalFiles int64  `json:"totalFiles"`
+		TotalSize  int64  `json:"totalSize"`
+	}
+	var mu sync.Mutex
+	remotesOut := []map[string]any{}
+	aggBytes := map[string]int64{}
+	aggFiles := map[string]int64{}
+	var grandBytes, grandFiles int64
+	var wg sync.WaitGroup
+
+	for _, r := range teldriveRemotes() {
+		wg.Add(1)
+		go func(r tdRemote) {
+			defer wg.Done()
+			rc, out := r.get(ctx, "/api/files/categories")
+			if rc != 0 {
+				return
+			}
+			var cats []catJSON
+			if json.Unmarshal([]byte(out), &cats) != nil {
+				return
+			}
+			var rb, rf int64
+			rcats := make([]map[string]any, 0, len(cats))
+			for _, c := range cats {
+				rb += c.TotalSize
+				rf += c.TotalFiles
+				rcats = append(rcats, map[string]any{"category": c.Category, "bytes": c.TotalSize, "human": humanBytes(c.TotalSize), "files": c.TotalFiles})
+			}
+			sort.SliceStable(rcats, func(i, j int) bool { return rcats[i]["bytes"].(int64) > rcats[j]["bytes"].(int64) })
+			mu.Lock()
+			remotesOut = append(remotesOut, map[string]any{"remote": r.Name, "bytes": rb, "human": humanBytes(rb), "files": rf, "categories": rcats})
+			for _, c := range cats {
+				aggBytes[c.Category] += c.TotalSize
+				aggFiles[c.Category] += c.TotalFiles
+			}
+			grandBytes += rb
+			grandFiles += rf
+			mu.Unlock()
+		}(r)
+	}
+	wg.Wait()
+	sort.SliceStable(remotesOut, func(i, j int) bool { return remotesOut[i]["bytes"].(int64) > remotesOut[j]["bytes"].(int64) })
+
+	agg := make([]map[string]any, 0, len(aggBytes))
+	for cat, b := range aggBytes {
+		agg = append(agg, map[string]any{"category": cat, "bytes": b, "human": humanBytes(b), "files": aggFiles[cat]})
+	}
+	sort.SliceStable(agg, func(i, j int) bool { return agg[i]["bytes"].(int64) > agg[j]["bytes"].(int64) })
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"remotes": remotesOut, "categories": agg,
+		"total_bytes": grandBytes, "total_human": humanBytes(grandBytes), "total_files": grandFiles,
+	})
+}
+
 // tdFindRel builds the find request exactly like the teldrive web UI (spaces as
 // %20, with page/order/sort) — matching it avoids subtle search-param mismatches.
 func tdFindRel(q string, limit int) string {

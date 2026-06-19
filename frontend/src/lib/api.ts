@@ -657,6 +657,10 @@ export const useClearJobs = () =>
 export const useTeldriveRemotes = () =>
   useQuery<{ remotes: string[] }>({ queryKey: ['teldrive-remotes'], queryFn: () => request('/teldrive/remotes'), staleTime: 60_000 })
 export interface TdResult { remote: string; name: string; is_dir: boolean; size: number; human: string; category: string; modified: string; dir: string }
+export interface TdCat { category: string; bytes: number; human: string; files: number }
+export interface TdStorage { remotes: { remote: string; bytes: number; human: string; files: number; categories: TdCat[] }[]; categories: TdCat[]; total_bytes: number; total_human: string; total_files: number }
+export const useTeldriveStorage = () =>
+  useQuery<TdStorage>({ queryKey: ['teldrive-storage'], queryFn: () => request('/teldrive/storage'), staleTime: 60_000 })
 export const useTeldriveSearch = (q: string) =>
   useQuery<{ results: TdResult[]; count: number; errors?: string[] }>({ queryKey: ['teldrive-search', q], queryFn: () => request(`/teldrive/search?q=${encodeURIComponent(q)}`), enabled: q.trim().length > 0 })
 
