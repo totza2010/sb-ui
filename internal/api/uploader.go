@@ -340,6 +340,17 @@ func uploaderCheck() {
 		upMu.Unlock()
 		return
 	}
+	// Plex throttle: hold off while people are streaming (cloudplow-style).
+	opt := loadOptions()
+	if opt.Plex.Throttle && opt.Plex.URL != "" {
+		if n := plexActiveStreams(opt.Plex); n >= 0 && n >= opt.Plex.MaxStreams {
+			upMu.Lock()
+			upLastAt, upLastMsg = time.Now(), "paused: "+strconv.Itoa(n)+" Plex stream(s) active"
+			upMu.Unlock()
+			return
+		}
+	}
+
 	size := measureSource(cfg.Source)
 	thr := int64(parseSize(cfg.Threshold))
 
@@ -401,6 +412,11 @@ func uploaderCheck() {
 		upLastMsg = "uploaded " + humanBytes(moved) + " / " + strconv.Itoa(files) + " files via " + r.Name
 	}
 	upMu.Unlock()
+
+	// Refresh Plex libraries after a successful upload (replaces autoscan).
+	if !flood && moved > 0 && opt.Plex.ScanAfterUpload && opt.Plex.URL != "" {
+		go plexRefreshAll(opt.Plex)
+	}
 }
 
 func startUploader() {

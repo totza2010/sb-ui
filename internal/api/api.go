@@ -89,6 +89,11 @@ func Mount(r chi.Router) {
 	r.Post("/api/rclone/dedupe", rcloneDedupe)
 	r.Post("/api/rclone/link", rcloneLink)
 
+	// Central options + Plex
+	r.Get("/api/options", getOptions)
+	r.Put("/api/options", putOptions)
+	r.Get("/api/plex/test", plexTest)
+
 	// teldrive (tgdrive) panel — only meaningful when teldrive remotes exist
 	r.Get("/api/teldrive/remotes", teldriveRemotesHandler)
 	r.Get("/api/teldrive/search", teldriveSearch)

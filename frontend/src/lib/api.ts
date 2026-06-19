@@ -653,6 +653,15 @@ export const useDeleteJob = () =>
 export const useClearJobs = () =>
   useMutation<{ ok: boolean; removed: number }, Error, void>({ mutationFn: () => request('/jobs/clear', { method: 'POST' }) })
 
+// Central options + Plex
+export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean } }
+export const useOptions = () =>
+  useQuery<OptionsConfig>({ queryKey: ['options'], queryFn: () => request('/options') })
+export const useSaveOptions = () =>
+  useMutation<{ ok: boolean }, Error, OptionsConfig>({ mutationFn: (c) => request('/options', { method: 'PUT', body: JSON.stringify(c) }) })
+export const usePlexTest = () =>
+  useMutation<{ ok: boolean; streams: number; sections: string[] }, Error, void>({ mutationFn: () => request('/plex/test') })
+
 // teldrive (tgdrive) panel — only active when teldrive remotes exist.
 export const useTeldriveRemotes = () =>
   useQuery<{ remotes: string[] }>({ queryKey: ['teldrive-remotes'], queryFn: () => request('/teldrive/remotes'), staleTime: 60_000 })
