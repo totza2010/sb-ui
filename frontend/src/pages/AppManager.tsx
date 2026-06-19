@@ -870,7 +870,7 @@ export function AppManager() {
       {activeAction === 'check-updates' && (
         <JobWatcher
           jobId={activeJobId}
-          onComplete={() => { refetchUpdates(); refetchVersion() }}
+          onComplete={() => { refetchUpdates(); refetchVersion(); qc.invalidateQueries({ queryKey: ['image-info'] }) }}
         />
       )}
 

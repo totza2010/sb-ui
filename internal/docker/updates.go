@@ -152,6 +152,9 @@ func CheckImageUpdate(image string) *bool {
 }
 
 // CheckAllUpdates checks images with bounded concurrency, updates + saves cache.
+// SaveCache persists the update cache (e.g. after a single-image recheck).
+func SaveCache() { saveCache() }
+
 func CheckAllUpdates(images []string) map[string]*bool {
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup

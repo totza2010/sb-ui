@@ -159,6 +159,10 @@ func pullApp(w http.ResponseWriter, req *http.Request) {
 		}
 		jobs.PushLog(j.ID, "\nImage pulled — reinstalling…\n")
 		ansible.RunPlaybook(context.Background(), j.ID, tag) // sets final status
+		// Re-evaluate update status for this image so the "update available" badge
+		// clears now that we're on the latest digest.
+		docker.CheckImageUpdate(image)
+		docker.SaveCache()
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
 }
