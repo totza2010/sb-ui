@@ -140,28 +140,31 @@ func pullApp(w http.ResponseWriter, req *http.Request) {
 	j := jobs.Create(tag, "pull")
 	go func() {
 		jobs.SetStatus(j.ID, "running")
-		name := strings.TrimPrefix(strings.TrimPrefix(tag, "sandbox-"), "mod-")
-		image := docker.ContainerImages()[name]
-		if image == "" {
-			jobs.PushLog(j.ID, "Container "+name+" not found or not running.")
+		images := apps.AppImages(tag) // all instances (multi-instance apps share one image)
+		if len(images) == 0 {
+			jobs.PushLog(j.ID, "No running containers found for "+tag+".")
 			jobs.SetStatus(j.ID, "failed")
 			return
 		}
-		jobs.PushLog(j.ID, "Pulling latest image: "+image)
-		s, err := executor.Get().RunStream(context.Background(), []string{"docker", "pull", image}, "", false)
-		if err != nil {
-			jobs.PushLog(j.ID, "ERROR: "+err.Error())
-			jobs.SetStatus(j.ID, "failed")
-			return
+		for _, image := range images {
+			jobs.PushLog(j.ID, "Pulling latest image: "+image)
+			s, err := executor.Get().RunStream(context.Background(), []string{"docker", "pull", image}, "", false)
+			if err != nil {
+				jobs.PushLog(j.ID, "ERROR: "+err.Error())
+				jobs.SetStatus(j.ID, "failed")
+				return
+			}
+			for line := range s.Lines {
+				jobs.PushLog(j.ID, line)
+			}
 		}
-		for line := range s.Lines {
-			jobs.PushLog(j.ID, line)
-		}
-		jobs.PushLog(j.ID, "\nImage pulled — reinstalling…\n")
+		jobs.PushLog(j.ID, "\nImage(s) pulled — reinstalling…\n")
 		ansible.RunPlaybook(context.Background(), j.ID, tag) // sets final status
-		// Re-evaluate update status for this image so the "update available" badge
-		// clears now that we're on the latest digest.
-		docker.CheckImageUpdate(image)
+		// Re-evaluate update status so the "update available" badge clears now that
+		// we're on the latest digest.
+		for _, image := range images {
+			docker.CheckImageUpdate(image)
+		}
 		docker.SaveCache()
 	}()
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})

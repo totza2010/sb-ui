@@ -960,10 +960,9 @@ function RcloneConfTab() {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export function ConfigEditor() {
+export function ConfigPanel() {
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-semibold text-foreground mb-4">Configuration</h1>
+    <div>
       <Tabs defaultValue="settings">
         {/* Sticky tab switcher */}
         <div className="sticky top-0 z-30 -mx-6 px-6 py-2 bg-background/95 backdrop-blur border-b border-border mb-5">

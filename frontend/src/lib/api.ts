@@ -653,6 +653,54 @@ export const useDeleteJob = () =>
 export const useClearJobs = () =>
   useMutation<{ ok: boolean; removed: number }, Error, void>({ mutationFn: () => request('/jobs/clear', { method: 'POST' }) })
 
+// tsdproxy (Tailscale proxy)
+export interface ProxyStatus { installed: boolean; configured: boolean; active: boolean; status: string }
+export const useProxyStatus = () =>
+  useQuery<ProxyStatus>({ queryKey: ['proxy-status'], queryFn: () => request('/proxy/status'), refetchInterval: 10000 })
+export interface TsAuth { mode: 'authkey' | 'oauth'; auth_key?: string; client_id?: string; client_secret?: string; tags?: string }
+export const useProxyInstall = () =>
+  useMutation<{ ok: boolean }, Error, TsAuth>({ mutationFn: (b) => request('/proxy/install', { method: 'POST', body: JSON.stringify(b) }) })
+export const useProxyRekey = () =>
+  useMutation<{ ok: boolean }, Error, TsAuth>({ mutationFn: (b) => request('/proxy/authkey', { method: 'PUT', body: JSON.stringify(b) }) })
+export interface ProxyTestResult { ok: boolean; mode: string; scope?: string; expires_in?: number; tailnet?: string; user?: string; devices?: number; note?: string; looks_valid?: boolean }
+export const useProxyTest = () =>
+  useMutation<ProxyTestResult, Error, TsAuth>({ mutationFn: (b) => request('/proxy/test', { method: 'POST', body: JSON.stringify(b) }) })
+export const useProxyRestart = () =>
+  useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/proxy/restart', { method: 'POST' }) })
+export interface ProxyEntry { name: string; target: string; label?: string; icon?: string; hidden?: boolean }
+export const useProxyLists = () =>
+  useQuery<{ entries: ProxyEntry[] }>({ queryKey: ['proxy-lists'], queryFn: () => request('/proxy/lists') })
+export const useProxyAddList = () =>
+  useMutation<{ ok: boolean }, Error, ProxyEntry>({ mutationFn: (e) => request('/proxy/lists', { method: 'POST', body: JSON.stringify(e) }) })
+export const useProxyDelList = () =>
+  useMutation<{ ok: boolean }, Error, string>({ mutationFn: (name) => request(`/proxy/lists/${encodeURIComponent(name)}`, { method: 'DELETE' }) })
+export interface ProxySelf { enabled: boolean; name: string; target: string; label?: string; icon?: string; hidden?: boolean }
+export interface ManagedPayload { enabled: boolean; name: string; label?: string; icon?: string; hidden?: boolean }
+export const useProxySelf = () =>
+  useQuery<ProxySelf>({ queryKey: ['proxy-self'], queryFn: () => request('/proxy/self') })
+export const useProxySetSelf = () =>
+  useMutation<{ ok: boolean }, Error, ManagedPayload>({ mutationFn: (b) => request('/proxy/self', { method: 'PUT', body: JSON.stringify(b) }) })
+export const useProxyDash = () =>
+  useQuery<ProxySelf>({ queryKey: ['proxy-dash'], queryFn: () => request('/proxy/dash') })
+export const useProxySetDash = () =>
+  useMutation<{ ok: boolean }, Error, ManagedPayload>({ mutationFn: (b) => request('/proxy/dash', { method: 'PUT', body: JSON.stringify(b) }) })
+export interface AppTSState { tag: string; app: string; enabled: boolean; name: string; port: string; default_port: string; label: string; icon: string; hidden: boolean; instances: string[] | null }
+export const useProxyApps = () =>
+  useQuery<{ apps: AppTSState[] }>({ queryKey: ['proxy-apps'], queryFn: () => request('/proxy/apps') })
+export interface AppTSPayload { enabled: boolean; name: string; port: string; label?: string; icon?: string; hidden?: boolean }
+export const useProxyAppSet = (tag: string) =>
+  useMutation<{ ok: boolean; job_id: string }, Error, AppTSPayload>({ mutationFn: (b) => request(`/apps/${encodeURIComponent(tag)}/tailscale`, { method: 'PUT', body: JSON.stringify(b) }) })
+export interface ProxyOpts {
+  log_level: string; log_json: boolean; dash_port: number; access_log: boolean; admin_localhost: boolean
+  control_url: string; prevent_duplicates: boolean; max_cert_concurrency: number
+  target_hostname: string; try_internal_net: boolean
+  health_check: boolean; health_interval: number; health_failures: number; health_cooldown: number; auto_restart: boolean
+}
+export const useProxyOpts = () =>
+  useQuery<ProxyOpts>({ queryKey: ['proxy-opts'], queryFn: () => request('/proxy/opts') })
+export const useProxySetOpts = () =>
+  useMutation<{ ok: boolean }, Error, ProxyOpts>({ mutationFn: (b) => request('/proxy/opts', { method: 'PUT', body: JSON.stringify(b) }) })
+
 // Central options + Plex
 export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean } }
 export const useOptions = () =>

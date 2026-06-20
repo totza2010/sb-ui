@@ -10,6 +10,25 @@ import (
 	"sb-ui/internal/jobs"
 )
 
+// AppImages returns the unique container images backing an app (multi-instance
+// apps share one image; companions may differ).
+func AppImages(tag string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, a := range List() {
+		if a.Tag != tag {
+			continue
+		}
+		for _, c := range append(append([]Instance{}, a.Instances...), a.Companions...) {
+			if c.Image != nil && *c.Image != "" && !seen[*c.Image] {
+				seen[*c.Image] = true
+				out = append(out, *c.Image)
+			}
+		}
+	}
+	return out
+}
+
 // RunRemove stops + removes every container an app owns (instances + companions)
 // and, when purge is set, deletes their /opt appdata. Docker apps only.
 func RunRemove(jobID, tag string, purge bool) {

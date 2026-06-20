@@ -9,11 +9,12 @@ import { useOptions, useSaveOptions, usePlexTest, type OptionsConfig } from '@/l
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Settings, Save, Plug, Loader2 } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
+import { Save, Plug, Loader2 } from 'lucide-react'
 
 const EMPTY: OptionsConfig = { plex: { url: '', token: '', throttle: false, max_streams: 1, scan_after_upload: true } }
 
-export function Options() {
+export function OptionsPanel() {
   const qc = useQueryClient()
   const { data } = useOptions()
   const save = useSaveOptions()
@@ -26,12 +27,9 @@ export function Options() {
   const doSave = () => save.mutate(cfg, { onSuccess: () => { qc.invalidateQueries({ queryKey: ['options'] }); setSaved(true); setTimeout(() => setSaved(false), 2500) } })
 
   return (
-    <div className="p-6 space-y-5 max-w-3xl">
+    <div className="space-y-5">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground flex items-center gap-2"><Settings className="h-5 w-5" />Options</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">Plex integration for the uploader — throttle while streaming, scan after upload.</p>
-        </div>
+        <p className="text-sm text-muted-foreground">Plex integration for the uploader — throttle while streaming, scan after upload.</p>
         <Button size="sm" className="gap-1.5 shrink-0" onClick={doSave} disabled={save.isPending}><Save className="h-3.5 w-3.5" />{saved ? 'Saved' : 'Save'}</Button>
       </div>
 
@@ -40,11 +38,13 @@ export function Options() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1 sm:col-span-2">
             <Label className="text-[11px]">Server URL</Label>
-            <Input className="h-8 font-mono" value={cfg.plex.url} onChange={(e) => up({ url: e.target.value })} placeholder="http://localhost:32400" />
+            <Input className="h-8 font-mono" value={cfg.plex.url} onChange={(e) => up({ url: e.target.value })} placeholder="http://localhost:32400"
+              autoComplete="off" name="plex-url" data-1p-ignore="true" data-lpignore="true" data-form-type="other" />
           </div>
           <div className="space-y-1">
             <Label className="text-[11px]">X-Plex-Token</Label>
-            <Input className="h-8 font-mono" type="password" value={cfg.plex.token} onChange={(e) => up({ token: e.target.value })} placeholder="token" />
+            <Input className="h-8 font-mono" type="password" value={cfg.plex.token} onChange={(e) => up({ token: e.target.value })} placeholder="token"
+              autoComplete="new-password" name="plex-token" data-1p-ignore="true" data-lpignore="true" data-form-type="other" />
           </div>
         </div>
 
@@ -56,27 +56,26 @@ export function Options() {
           {test.isError && <span className="text-xs text-destructive">{test.error.message}</span>}
         </div>
 
-        <label className="flex items-start gap-2 text-sm text-foreground">
-          <input type="checkbox" className="mt-0.5" checked={cfg.plex.throttle} onChange={(e) => up({ throttle: e.target.checked })} />
-          <span>
-            Throttle uploads while streaming
-            <span className="block text-[11px] text-muted-foreground">Pause the uploader when active Plex streams reach the limit below.</span>
-          </span>
-        </label>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="flex items-start justify-between gap-3 rounded-md border border-border px-3 py-2">
+            <span className="text-sm text-foreground">Throttle uploads while streaming
+              <span className="block text-[11px] text-muted-foreground">Pause the uploader when active Plex streams reach the limit.</span>
+            </span>
+            <Switch checked={cfg.plex.throttle} onCheckedChange={(v) => up({ throttle: v })} className="mt-0.5" />
+          </div>
+          <div className="flex items-start justify-between gap-3 rounded-md border border-border px-3 py-2">
+            <span className="text-sm text-foreground">Scan libraries after upload
+              <span className="block text-[11px] text-muted-foreground">Refresh all Plex sections when an uploader run finishes (replaces autoscan).</span>
+            </span>
+            <Switch checked={cfg.plex.scan_after_upload} onCheckedChange={(v) => up({ scan_after_upload: v })} className="mt-0.5" />
+          </div>
+        </div>
         {cfg.plex.throttle && (
-          <div className="space-y-1 pl-6">
+          <div className="space-y-1">
             <Label className="text-[11px]">Pause when streams ≥</Label>
             <Input type="number" min={1} className="h-8 w-24" value={cfg.plex.max_streams} onChange={(e) => up({ max_streams: Math.max(1, parseInt(e.target.value, 10) || 1) })} />
           </div>
         )}
-
-        <label className="flex items-start gap-2 text-sm text-foreground">
-          <input type="checkbox" className="mt-0.5" checked={cfg.plex.scan_after_upload} onChange={(e) => up({ scan_after_upload: e.target.checked })} />
-          <span>
-            Scan libraries after upload
-            <span className="block text-[11px] text-muted-foreground">Refresh all Plex sections when an uploader run finishes (replaces autoscan).</span>
-          </span>
-        </label>
       </div>
     </div>
   )

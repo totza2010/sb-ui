@@ -9,7 +9,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"sb-ui/internal/ansible"
+	"sb-ui/internal/apps"
 	"sb-ui/internal/buildinfo"
+	"sb-ui/internal/docker"
 	"sb-ui/internal/jobs"
 )
 
@@ -88,6 +90,25 @@ func Mount(r chi.Router) {
 	r.Post("/api/rclone/cleanup", rcloneCleanup)
 	r.Post("/api/rclone/dedupe", rcloneDedupe)
 	r.Post("/api/rclone/link", rcloneLink)
+
+	// tsdproxy (Tailscale proxy) — install + host-service list management
+	r.Get("/api/proxy/status", proxyStatus)
+	r.Post("/api/proxy/install", proxyInstall)
+	r.Get("/api/proxy/lists", proxyGetLists)
+	r.Post("/api/proxy/lists", proxyAddList)
+	r.Delete("/api/proxy/lists/{name}", proxyDelList)
+	r.Get("/api/proxy/self", proxyGetSelf)
+	r.Put("/api/proxy/self", proxyPutSelf)
+	r.Get("/api/proxy/dash", proxyGetDash)
+	r.Put("/api/proxy/dash", proxyPutDash)
+	r.Get("/api/proxy/opts", proxyGetOpts)
+	r.Put("/api/proxy/opts", proxyPutOpts)
+	r.Get("/api/proxy/apps", proxyAppsList)
+	r.Put("/api/apps/{tag}/tailscale", appTailscalePut)
+	r.Put("/api/proxy/authkey", proxyRekey)
+	r.Post("/api/proxy/test", proxyTest)
+	r.Post("/api/proxy/restart", proxyRestart)
+	go syncSelfProxy() // keep the self entry's (dynamic) port fresh on startup
 
 	// Central options + Plex
 	r.Get("/api/options", getOptions)
@@ -223,7 +244,16 @@ func installApp(action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		tag := chi.URLParam(req, "tag")
 		j := jobs.Create(tag, action)
-		go ansible.RunPlaybook(context.Background(), j.ID, tag)
+		go func() {
+			ansible.RunPlaybook(context.Background(), j.ID, tag)
+			// Refresh the update badge — after a (re)install the local image may now
+			// be current (or confirmed still behind). Keyed by image, covers all
+			// instances of a multi-instance app.
+			for _, img := range apps.AppImages(tag) {
+				docker.CheckImageUpdate(img)
+			}
+			docker.SaveCache()
+		}()
 		writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
 	}
 }

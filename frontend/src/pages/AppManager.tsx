@@ -880,6 +880,9 @@ export function AppManager() {
           if (!o) {
             setActiveJobId(null)
             refetchUpdates()
+            // pull/reinstall re-check the image server-side after the playbook; by the
+            // time the user closes the log it's done — refresh the detail badge too.
+            qc.invalidateQueries({ queryKey: ['image-info'] })
           }
         }}
       >
