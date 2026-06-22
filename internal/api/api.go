@@ -105,6 +105,11 @@ func Mount(r chi.Router) {
 	r.Put("/api/proxy/opts", proxyPutOpts)
 	r.Get("/api/proxy/apps", proxyAppsList)
 	r.Put("/api/apps/{tag}/tailscale", appTailscalePut)
+
+	// Unified *arr library (Sonarr/Radarr across instances)
+	r.Get("/api/arr/library", arrLibrary)
+	r.Get("/api/arr/files", arrFiles)
+	r.Post("/api/arr/command", arrCommand)
 	r.Put("/api/proxy/authkey", proxyRekey)
 	r.Post("/api/proxy/test", proxyTest)
 	r.Post("/api/proxy/restart", proxyRestart)

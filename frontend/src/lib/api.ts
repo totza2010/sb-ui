@@ -684,6 +684,32 @@ export const useProxyDash = () =>
   useQuery<ProxySelf>({ queryKey: ['proxy-dash'], queryFn: () => request('/proxy/dash') })
 export const useProxySetDash = () =>
   useMutation<{ ok: boolean }, Error, ManagedPayload>({ mutationFn: (b) => request('/proxy/dash', { method: 'PUT', body: JSON.stringify(b) }) })
+// Unified *arr library (Sonarr/Radarr across instances)
+export interface ArrCopy { instance: string; item_id: number; profile: string; files: number; size: number; has_file: boolean }
+export interface ArrItem {
+  kind: string; key: string; title: string; year: number
+  poster: string; overview: string; status: string; network: string
+  runtime: number; rating: number; monitored: boolean; genres: string[] | null
+  seasons: number; episodes: number
+  copies: ArrCopy[]
+}
+export interface ArrMedia { resolution?: string; video_codec?: string; dynamic_range?: string; audio_codec?: string; audio_channels?: number; audio_languages?: string; subtitles?: string; runtime?: string }
+export interface ArrFile { season?: number; episode?: number; episode_id?: number; file_id?: number; title?: string; air_date?: string; monitored: boolean; has_file: boolean; quality?: string; size: number; path?: string; full_path?: string; release_group?: string; languages?: string; date_added?: string; media?: ArrMedia }
+export interface ArrCommand { kind: string; instance: string; id: number; action: string; episode_id?: number; file_id?: number; season?: number }
+export const useArrLibrary = () =>
+  useQuery<{ items: ArrItem[]; instances: { kind: string; name: string }[] }>({ queryKey: ['arr-library'], queryFn: () => request('/arr/library'), staleTime: 60000 })
+export const arrFilesQueryOpts = (kind: string, instance: string, id: number) => ({
+  queryKey: ['arr-files', kind, instance, id],
+  queryFn: () => request<{ files: ArrFile[] }>(`/arr/files?kind=${kind}&instance=${encodeURIComponent(instance)}&id=${id}`),
+  staleTime: 60000,
+})
+export const useArrFiles = (kind: string, instance: string, id: number, enabled: boolean) =>
+  useQuery<{ files: ArrFile[] }>({ ...arrFilesQueryOpts(kind, instance, id), enabled })
+export const useArrCommand = () =>
+  useMutation<{ ok: boolean }, Error, ArrCommand>({
+    mutationFn: (b) => request('/arr/command', { method: 'POST', body: JSON.stringify(b) }),
+  })
+
 export interface AppTSState { tag: string; app: string; enabled: boolean; name: string; port: string; default_port: string; label: string; icon: string; hidden: boolean; instances: string[] | null }
 export const useProxyApps = () =>
   useQuery<{ apps: AppTSState[] }>({ queryKey: ['proxy-apps'], queryFn: () => request('/proxy/apps') })
