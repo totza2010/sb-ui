@@ -685,26 +685,36 @@ export const useProxyDash = () =>
 export const useProxySetDash = () =>
   useMutation<{ ok: boolean }, Error, ManagedPayload>({ mutationFn: (b) => request('/proxy/dash', { method: 'PUT', body: JSON.stringify(b) }) })
 // Unified *arr library (Sonarr/Radarr across instances)
-export interface ArrCopy { instance: string; item_id: number; profile: string; files: number; size: number; has_file: boolean }
+export interface ArrCopy { instance: string; item_id: number; profile: string; files: number; size: number; has_file: boolean; in_plex: boolean; folder?: string }
+export const useArrPlexRefresh = () =>
+  useMutation<{ ok: boolean }, Error, { path: string }>({ mutationFn: (b) => request('/arr/plex-refresh', { method: 'POST', body: JSON.stringify(b) }) })
 export interface ArrItem {
   kind: string; key: string; title: string; year: number
   poster: string; overview: string; status: string; network: string
   runtime: number; rating: number; monitored: boolean; genres: string[] | null
-  seasons: number; episodes: number
+  seasons: number; episodes: number; in_plex: boolean
   copies: ArrCopy[]
 }
 export interface ArrMedia { resolution?: string; video_codec?: string; dynamic_range?: string; audio_codec?: string; audio_channels?: number; audio_languages?: string; subtitles?: string; runtime?: string }
-export interface ArrFile { season?: number; episode?: number; episode_id?: number; file_id?: number; title?: string; air_date?: string; monitored: boolean; has_file: boolean; quality?: string; size: number; path?: string; full_path?: string; release_group?: string; languages?: string; date_added?: string; media?: ArrMedia }
+export interface ArrFile { season?: number; episode?: number; episode_id?: number; file_id?: number; title?: string; air_date?: string; monitored: boolean; has_file: boolean; in_plex: boolean; quality?: string; size: number; path?: string; full_path?: string; release_group?: string; languages?: string; date_added?: string; media?: ArrMedia }
 export interface ArrCommand { kind: string; instance: string; id: number; action: string; episode_id?: number; file_id?: number; season?: number }
 export const useArrLibrary = () =>
   useQuery<{ items: ArrItem[]; instances: { kind: string; name: string }[] }>({ queryKey: ['arr-library'], queryFn: () => request('/arr/library'), staleTime: 60000 })
-export const arrFilesQueryOpts = (kind: string, instance: string, id: number) => ({
+
+export interface ConnStat { label: string; value: number }
+export interface PathStat { path: string; stats: ConnStat[] }
+export interface ConnStatus { name: string; base_url: string; ok: boolean; version?: string; detail?: string; error?: string; latency_ms: number; recommended?: boolean; stats?: ConnStat[]; path_stats?: PathStat[] }
+export interface PlexLibInfo { title: string; type: string; count: number; locations?: string[] }
+export interface IntegrationGroup { key: string; label: string; library: string; used: boolean; configured: boolean; note?: string; instances: ConnStatus[]; libraries?: PlexLibInfo[] }
+export const useIntegrations = () =>
+  useQuery<{ groups: IntegrationGroup[] }>({ queryKey: ['integrations'], queryFn: () => request('/integrations') })
+export const arrFilesQueryOpts = (kind: string, instance: string, id: number, ext = '') => ({
   queryKey: ['arr-files', kind, instance, id],
-  queryFn: () => request<{ files: ArrFile[] }>(`/arr/files?kind=${kind}&instance=${encodeURIComponent(instance)}&id=${id}`),
+  queryFn: () => request<{ files: ArrFile[] }>(`/arr/files?kind=${kind}&instance=${encodeURIComponent(instance)}&id=${id}&ext=${encodeURIComponent(ext)}`),
   staleTime: 60000,
 })
-export const useArrFiles = (kind: string, instance: string, id: number, enabled: boolean) =>
-  useQuery<{ files: ArrFile[] }>({ ...arrFilesQueryOpts(kind, instance, id), enabled })
+export const useArrFiles = (kind: string, instance: string, id: number, enabled: boolean, ext = '') =>
+  useQuery<{ files: ArrFile[] }>({ ...arrFilesQueryOpts(kind, instance, id, ext), enabled })
 export const useArrCommand = () =>
   useMutation<{ ok: boolean }, Error, ArrCommand>({
     mutationFn: (b) => request('/arr/command', { method: 'POST', body: JSON.stringify(b) }),
@@ -728,13 +738,16 @@ export const useProxySetOpts = () =>
   useMutation<{ ok: boolean }, Error, ProxyOpts>({ mutationFn: (b) => request('/proxy/opts', { method: 'PUT', body: JSON.stringify(b) }) })
 
 // Central options + Plex
-export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean } }
+export interface PathMapping { from: string; to: string }
+export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean }; path_mappings?: PathMapping[] }
+export const usePathmapSuggest = () =>
+  useQuery<{ arr_roots: string[]; plex_roots: string[] }>({ queryKey: ['pathmap-suggest'], queryFn: () => request('/arr/pathmap-suggest') })
 export const useOptions = () =>
   useQuery<OptionsConfig>({ queryKey: ['options'], queryFn: () => request('/options') })
 export const useSaveOptions = () =>
   useMutation<{ ok: boolean }, Error, OptionsConfig>({ mutationFn: (c) => request('/options', { method: 'PUT', body: JSON.stringify(c) }) })
 export const usePlexTest = () =>
-  useMutation<{ ok: boolean; streams: number; sections: string[] }, Error, void>({ mutationFn: () => request('/plex/test') })
+  useMutation<{ ok: boolean; streams: number; sections: string[] }, Error, { url: string; token: string } | void>({ mutationFn: (b) => request('/plex/test', { method: 'POST', body: JSON.stringify(b ?? {}) }) })
 
 // teldrive (tgdrive) panel — only active when teldrive remotes exist.
 export const useTeldriveRemotes = () =>

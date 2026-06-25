@@ -1,15 +1,11 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
-	"time"
 
-	"sb-ui/internal/executor"
 	"sb-ui/internal/store"
 )
 
@@ -25,8 +21,30 @@ type plexConfig struct {
 	ScanAfterUpload bool   `json:"scan_after_upload"` // refresh libraries when an upload finishes
 }
 
+// pathMapping translates an arr file path to its Plex-side equivalent (their
+// library roots can differ, e.g. arr /Media/TV-UHD vs Plex /Media/tvuhd).
+type pathMapping struct {
+	From string `json:"from"` // arr path prefix
+	To   string `json:"to"`   // Plex path prefix
+}
+
 type optionsConfig struct {
-	Plex plexConfig `json:"plex"`
+	Plex         plexConfig    `json:"plex"`
+	PathMappings []pathMapping `json:"path_mappings"`
+}
+
+// mapArrPath rewrites an arr path to the Plex path using the longest matching
+// prefix mapping. Returns the path unchanged when nothing matches.
+func mapArrPath(p string) string {
+	best := -1
+	out := p
+	for _, m := range loadOptions().PathMappings {
+		if m.From != "" && strings.HasPrefix(p, m.From) && len(m.From) > best {
+			best = len(m.From)
+			out = m.To + p[len(m.From):]
+		}
+	}
+	return out
 }
 
 const optionsRel = "cache/options.json"
@@ -62,85 +80,42 @@ func putOptions(w http.ResponseWriter, req *http.Request) {
 	optLoaded = true
 	store.WriteJSON(optionsRel, optCfg)
 	optMu.Unlock()
+	resetPlexDirs() // Plex URL/token may have changed → rebuild the path index
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// plexCurl calls the Plex API over curl on the host (where Plex lives), asking
-// for JSON. Returns (exitcode, body).
-func plexCurl(cfg plexConfig, p string) (int, string) {
-	u := strings.TrimRight(cfg.URL, "/") + p
-	if strings.Contains(p, "?") {
-		u += "&"
-	} else {
-		u += "?"
-	}
-	u += "X-Plex-Token=" + url.QueryEscape(cfg.Token)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	rc, out, _ := executor.Get().Run(ctx, []string{"curl", "-fsS", "--max-time", "12", "-H", "Accept: application/json", u}, "")
-	return rc, out
-}
-
-// plexActiveStreams returns the number of active Plex sessions (-1 on error).
-func plexActiveStreams(cfg plexConfig) int {
-	if cfg.URL == "" {
-		return -1
-	}
-	rc, out := plexCurl(cfg, "/status/sessions")
-	if rc != 0 {
-		return -1
-	}
-	var r struct {
-		MediaContainer struct {
-			Size int `json:"size"`
-		} `json:"MediaContainer"`
-	}
-	if json.Unmarshal([]byte(out), &r) != nil {
-		return -1
-	}
-	return r.MediaContainer.Size
-}
-
+// plexSection is one Plex library section. Sections + all other Plex calls are
+// served by the plexgo client (see plexclient.go).
 type plexSection struct {
-	Key   string `json:"key"`
-	Title string `json:"title"`
-	Type  string `json:"type"`
+	Key       string   `json:"key"`
+	Title     string   `json:"title"`
+	Type      string   `json:"type"`
+	Locations []string `json:"locations,omitempty"` // library root paths
 }
 
-func plexSections(cfg plexConfig) []plexSection {
-	rc, out := plexCurl(cfg, "/library/sections")
-	if rc != 0 {
-		return nil
-	}
-	var r struct {
-		MediaContainer struct {
-			Directory []plexSection `json:"Directory"`
-		} `json:"MediaContainer"`
-	}
-	_ = json.Unmarshal([]byte(out), &r)
-	return r.MediaContainer.Directory
-}
-
-// plexRefreshAll triggers a scan on every library section (post-upload).
-func plexRefreshAll(cfg plexConfig) {
-	for _, s := range plexSections(cfg) {
-		plexCurl(cfg, "/library/sections/"+s.Key+"/refresh")
-	}
-}
-
-// plexTest reports connectivity: active streams + library sections.
-func plexTest(w http.ResponseWriter, _ *http.Request) {
+// plexTest reports connectivity: library sections + active streams, via plexgo.
+func plexTest(w http.ResponseWriter, req *http.Request) {
 	cfg := loadOptions().Plex
+	// Allow testing the values currently in the form (before Save).
+	var b struct {
+		URL   string `json:"url"`
+		Token string `json:"token"`
+	}
+	if json.NewDecoder(req.Body).Decode(&b); strings.TrimSpace(b.URL) != "" {
+		cfg.URL = strings.TrimSpace(b.URL)
+		if strings.TrimSpace(b.Token) != "" {
+			cfg.Token = strings.TrimSpace(b.Token)
+		}
+	}
 	if cfg.URL == "" {
 		http.Error(w, "Plex URL not set", http.StatusBadRequest)
 		return
 	}
-	rc, _ := plexCurl(cfg, "/identity")
-	if rc != 0 {
-		http.Error(w, "cannot reach Plex (check URL/token)", http.StatusBadGateway)
+	secs := plexSections(cfg)
+	if len(secs) == 0 {
+		http.Error(w, "cannot reach Plex or no library sections (check URL/token)", http.StatusBadGateway)
 		return
 	}
-	secs := plexSections(cfg)
 	titles := make([]string, 0, len(secs))
 	for _, s := range secs {
 		titles = append(titles, s.Title)

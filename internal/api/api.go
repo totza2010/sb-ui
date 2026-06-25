@@ -110,6 +110,10 @@ func Mount(r chi.Router) {
 	r.Get("/api/arr/library", arrLibrary)
 	r.Get("/api/arr/files", arrFiles)
 	r.Post("/api/arr/command", arrCommand)
+	r.Post("/api/arr/plex-refresh", arrPlexRefresh)
+	r.Get("/api/integrations", integrationsStatus)
+	r.Get("/api/arr/plexdebug", arrPlexDebug)
+	r.Get("/api/arr/pathmap-suggest", arrPathmapSuggest)
 	r.Put("/api/proxy/authkey", proxyRekey)
 	r.Post("/api/proxy/test", proxyTest)
 	r.Post("/api/proxy/restart", proxyRestart)
@@ -118,7 +122,7 @@ func Mount(r chi.Router) {
 	// Central options + Plex
 	r.Get("/api/options", getOptions)
 	r.Put("/api/options", putOptions)
-	r.Get("/api/plex/test", plexTest)
+	r.Post("/api/plex/test", plexTest)
 
 	// teldrive (tgdrive) panel — only meaningful when teldrive remotes exist
 	r.Get("/api/teldrive/remotes", teldriveRemotesHandler)

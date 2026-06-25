@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -21,12 +22,13 @@ import (
 // instance is reached over the Docker bridge using the ApiKey from its config.xml.
 
 type arrInstance struct {
-	Kind    string // "sonarr" | "radarr"
+	Kind    string // sonarr | radarr | prowlarr | whisparr
 	Name    string // instance / container name
 	IP      string // container IP on the docker network
 	Port    string
 	APIKey  string
 	URLBase string
+	WebURL  string // public URL from the container's Traefik Host rule (remote mode)
 }
 
 var xmlTagRE = func(tag string) *regexp.Regexp {
@@ -59,6 +61,60 @@ func containerIP(name string) string {
 	return ""
 }
 
+// traefikHostRE pulls the hostname out of a Traefik `Host(`x.domain`)` router rule.
+var traefikHostRE = regexp.MustCompile("Host\\(`([^`]+)`\\)")
+
+// plexVideoExtRE detects a media file path (so we scan its folder, not the file —
+// Plex's targeted refresh works at directory granularity, like autoplow).
+var plexVideoExtRE = regexp.MustCompile(`(?i)\.(mkv|mp4|avi|m4v|ts|mov|wmv|flv|webm|mpg|mpeg|m2ts|iso)$`)
+
+// containerTsdURL returns a container's tailnet URL if it's exposed via tsdproxy
+// (docker provider): label tsdproxy.enable=true, hostname from tsdproxy.name (or the
+// container name). Mirrors containerWebHost but for the Tailscale proxy.
+func containerTsdURL(name string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rc, out, _ := executor.Get().Run(ctx, []string{
+		"docker", "inspect", "-f",
+		`{{index .Config.Labels "tsdproxy.enable"}}|{{index .Config.Labels "tsdproxy.name"}}`, name,
+	}, "")
+	if rc != 0 {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimSpace(out), "|", 2)
+	if len(parts) == 0 || !strings.EqualFold(parts[0], "true") {
+		return ""
+	}
+	host := name
+	if len(parts) == 2 && parts[1] != "" && parts[1] != "<no value>" {
+		host = parts[1]
+	}
+	suffix := tailnetSuffix()
+	if suffix == "" {
+		return ""
+	}
+	return "https://" + host + "." + suffix
+}
+
+// containerWebHost returns a container's public hostname as actually served by
+// Traefik — read straight from its router-rule label. This honours any subdomain
+// customisation in the inventory (e.g. sonarr-ai) without re-rendering Jinja.
+func containerWebHost(name string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	rc, out, _ := executor.Get().Run(ctx, []string{
+		"docker", "inspect", "-f",
+		`{{range .Config.Labels}}{{println .}}{{end}}`, name,
+	}, "")
+	if rc != 0 {
+		return ""
+	}
+	if m := traefikHostRE.FindStringSubmatch(out); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
 var (
 	arrCacheMu  sync.Mutex
 	arrCacheVal []arrInstance
@@ -82,12 +138,19 @@ func arrInstancesCached() []arrInstance {
 }
 
 // arrInstances discovers every running Sonarr/Radarr instance with a readable
-// config.xml + reachable container. Discovery is parallel per instance.
+// config.xml + reachable container.
 func arrInstances() []arrInstance {
-	defPort := map[string]string{"sonarr": "8989", "radarr": "7878"}
+	return discoverArrApps(map[string]string{"sonarr": "8989", "radarr": "7878"})
+}
+
+// discoverArrApps discovers every instance of the given *arr-family apps (kind →
+// default port) by reading each one's config.xml (ApiKey/Port/UrlBase) and its
+// container IP. Parallel per instance. Works for sonarr/radarr/prowlarr/whisparr —
+// they all share the *arr config.xml + v3 API shape.
+func discoverArrApps(defPort map[string]string) []arrInstance {
 	type cand struct{ kind, name, path string }
 	var cands []cand
-	for _, kind := range []string{"sonarr", "radarr"} {
+	for kind := range defPort {
 		for _, ap := range inventory.ResolveAppdata(kind) {
 			cands = append(cands, cand{kind, ap.Instance, ap.Path})
 		}
@@ -117,9 +180,21 @@ func arrInstances() []arrInstance {
 			if port == "" {
 				port = defPort[c.kind]
 			}
+			// Only needed for remote mode (where the docker IP isn't routable from
+			// the sb-ui process); skip the extra inspect when running on the host.
+			// Prefer the Traefik public URL, fall back to the tsdproxy tailnet URL.
+			web := ""
+			if _, local := executor.Get().(executor.LocalExecutor); !local {
+				if h := containerWebHost(c.name); h != "" {
+					web = "https://" + h
+				} else if u := containerTsdURL(c.name); u != "" {
+					web = u
+				}
+			}
 			out[i] = arrInstance{
 				Kind: c.kind, Name: c.name, IP: ip, Port: port,
 				APIKey: key, URLBase: strings.TrimRight(xmlTag(content, "UrlBase"), "/"),
+				WebURL: web,
 			}
 		}(i, c)
 	}
@@ -138,32 +213,238 @@ func arrInstances() []arrInstance {
 // prefetch) never floods SSH sessions / the arr backends.
 var arrSem = make(chan struct{}, 6)
 
-// arrGet calls a *arr v3 API endpoint on an instance.
-func arrGet(inst arrInstance, path string) (int, string) {
-	arrSem <- struct{}{}
-	defer func() { <-arrSem }()
-	url := "http://" + inst.IP + ":" + inst.Port + inst.URLBase + "/api/v3/" + path
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-	defer cancel()
-	rc, out, _ := executor.Get().Run(ctx, []string{"curl", "-fsS", "-H", "X-Api-Key: " + inst.APIKey, url}, "")
-	return rc, out
+// ── Plex availability (match by the tvdb-/tmdb- id embedded in the path) ────────
+// arr root folders (TV-UHD, TV-AI, …) and Plex library roots (tvuhd, …) don't line
+// up, but both paths carry "{tvdb-N}"/"{tmdb-N}" and our items are keyed by the same
+// id — so we match on that id rather than the full path.
+
+var (
+	// matches "tvdb-368166", "tvdb://368166" (Plex Guid), etc.
+	plexTvdbRE = regexp.MustCompile(`(?i)tvdb[-:/]+(\d+)`)
+	plexTmdbRE = regexp.MustCompile(`(?i)tmdb[-:/]+(\d+)`)
+)
+
+type plexIDSet struct {
+	Tvdb    map[string]bool
+	Tmdb    map[string]bool
+	ShowKey map[string]string // tvdbId → Plex show ratingKey (for episode-level checks)
 }
 
-// arrSend issues a method+body request to a *arr v3 endpoint (POST/PUT). Body is
-// piped via stdin to avoid shell quoting.
-func arrSend(inst arrInstance, method, path, body string) (int, string) {
-	arrSem <- struct{}{}
-	defer func() { <-arrSem }()
-	url := "http://" + inst.IP + ":" + inst.Port + inst.URLBase + "/api/v3/" + path
-	args := []string{"curl", "-fsS", "-X", method, "-H", "X-Api-Key: " + inst.APIKey}
-	if body != "" {
-		args = append(args, "-H", "Content-Type: application/json", "--data", "@-")
+var (
+	plexIDMu  sync.Mutex
+	plexIDVal *plexIDSet
+	plexIDTS  time.Time
+)
+
+const plexIDTTL = 15 * time.Minute
+
+func plexIDsCached() plexIDSet {
+	plexIDMu.Lock()
+	defer plexIDMu.Unlock()
+	if plexIDVal != nil && time.Since(plexIDTS) < plexIDTTL {
+		return *plexIDVal
 	}
-	args = append(args, url)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	rc, out, _ := executor.Get().Run(ctx, args, body)
-	return rc, out
+	v := plexMediaIDs()
+	plexIDVal = &v
+	plexIDTS = time.Now()
+	return v
+}
+
+func resetPlexDirs() { // called from putOptions when Plex config changes
+	plexIDMu.Lock()
+	plexIDVal = nil
+	plexIDMu.Unlock()
+}
+
+func addPlexIDs(set *plexIDSet, s string) {
+	if m := plexTvdbRE.FindStringSubmatch(s); m != nil {
+		set.Tvdb[m[1]] = true
+	}
+	if m := plexTmdbRE.FindStringSubmatch(s); m != nil {
+		set.Tmdb[m[1]] = true
+	}
+}
+
+// arrPlexRefresh triggers a targeted Plex scan of one arr path (folder or file).
+// The arr path is mapped to its Plex equivalent first, then the matching section is
+// scanned with ?path= — Plex picks up just that path (autoplow-style).
+func arrPlexRefresh(w http.ResponseWriter, req *http.Request) {
+	var b struct {
+		Path string `json:"path"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&b)
+	b.Path = strings.TrimSpace(b.Path)
+	if b.Path == "" {
+		http.Error(w, "path required", http.StatusBadRequest)
+		return
+	}
+	cfg := loadOptions().Plex
+	if cfg.URL == "" {
+		http.Error(w, "Plex not configured", http.StatusBadRequest)
+		return
+	}
+	plexPath := mapArrPath(b.Path)
+	// Plex scans at directory granularity — for a file path, refresh its folder
+	// (autoplow does the same). The folder rescan picks up that specific file.
+	if plexVideoExtRE.MatchString(plexPath) {
+		plexPath = path.Dir(plexPath)
+	}
+	secID, ok := plexSectionForPath(cfg, plexPath)
+	if !ok {
+		http.Error(w, "no Plex section matches "+plexPath+" — add a path mapping", http.StatusBadRequest)
+		return
+	}
+	if err := plexRefreshPath(cfg, secID, plexPath); err != nil {
+		http.Error(w, "Plex refresh failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "section": secID, "path": plexPath})
+}
+
+func itemInPlex(ids plexIDSet, it *arrItem) bool {
+	if it.Kind == "sonarr" {
+		return ids.Tvdb[it.Key]
+	}
+	return ids.Tmdb[it.Key]
+}
+
+// arrPathmapSuggest lists arr root folders + Plex section roots so the user can
+// pair mismatched roots (e.g. /Media/TV-UHD → /Media/tvuhd) into path mappings.
+func arrPathmapSuggest(w http.ResponseWriter, _ *http.Request) {
+	arrRoots := map[string]bool{}
+	for _, inst := range arrInstancesCached() {
+		ctx, cancel := arrCtx()
+		if inst.Kind == "sonarr" {
+			rfs, _, err := sonarrClient(inst).RootFolderAPI.ListRootFolder(ctx).Execute()
+			if err == nil {
+				for _, r := range rfs {
+					if r.GetPath() != "" {
+						arrRoots[r.GetPath()] = true
+					}
+				}
+			}
+		} else {
+			rfs, _, err := radarrClient(inst).RootFolderAPI.ListRootFolder(ctx).Execute()
+			if err == nil {
+				for _, r := range rfs {
+					if r.GetPath() != "" {
+						arrRoots[r.GetPath()] = true
+					}
+				}
+			}
+		}
+		cancel()
+	}
+
+	plexRoots := map[string]bool{}
+	for _, s := range plexSections(loadOptions().Plex) {
+		for _, loc := range s.Locations {
+			if loc != "" {
+				plexRoots[loc] = true
+			}
+		}
+	}
+
+	keys := func(m map[string]bool) []string {
+		out := make([]string, 0, len(m))
+		for k := range m {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		return out
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"arr_roots": keys(arrRoots), "plex_roots": keys(plexRoots)})
+}
+
+// arrPlexDebug surfaces the Plex id index + arr keys + how many arr titles match,
+// so a count/format mismatch is obvious. Bypasses the cache (always fresh).
+func arrPlexDebug(w http.ResponseWriter, _ *http.Request) {
+	cfg := loadOptions().Plex
+
+	// Per-section diagnostic via plexgo: section type + how many ids it yields.
+	var diag []map[string]any
+	for _, s := range plexSections(cfg) {
+		diag = append(diag, map[string]any{
+			"section": s.Title, "type": s.Type, "locations": s.Locations,
+		})
+	}
+
+	ids := plexMediaIDs() // fresh, no cache — reflects current code immediately
+	sample := func(m map[string]bool, n int) []string {
+		out := make([]string, 0, n)
+		for k := range m {
+			out = append(out, k)
+			if len(out) >= n {
+				break
+			}
+		}
+		return out
+	}
+
+	var arrTvdb, arrTmdb, matched []string
+	tvMatch, mvMatch := 0, 0
+	for _, inst := range arrInstancesCached() {
+		ctx, cancel := arrCtx()
+		if inst.Kind == "sonarr" {
+			series, _, err := sonarrClient(inst).SeriesAPI.ListSeries(ctx).Execute()
+			cancel()
+			if err != nil {
+				continue
+			}
+			for _, s := range series {
+				k := strconv.Itoa(int(s.GetTvdbId()))
+				if len(arrTvdb) < 8 {
+					arrTvdb = append(arrTvdb, k)
+				}
+				if ids.Tvdb[k] {
+					tvMatch++
+					if len(matched) < 10 {
+						matched = append(matched, "tvdb:"+k)
+					}
+				}
+			}
+		} else {
+			movies, _, err := radarrClient(inst).MovieAPI.ListMovie(ctx).Execute()
+			cancel()
+			if err != nil {
+				continue
+			}
+			for _, m := range movies {
+				k := strconv.Itoa(int(m.GetTmdbId()))
+				if len(arrTmdb) < 8 {
+					arrTmdb = append(arrTmdb, k)
+				}
+				if ids.Tmdb[k] {
+					mvMatch++
+					if len(matched) < 10 {
+						matched = append(matched, "tmdb:"+k)
+					}
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plex_url_set":     cfg.URL != "",
+		"plex_tvdb_count":  len(ids.Tvdb),
+		"plex_tmdb_count":  len(ids.Tmdb),
+		"sample_plex_tvdb": sample(ids.Tvdb, 8),
+		"sample_plex_tmdb": sample(ids.Tmdb, 8),
+		"sample_arr_tvdb":  arrTvdb,
+		"sample_arr_tmdb":  arrTmdb,
+		"matched_series":   tvMatch,
+		"matched_movies":   mvMatch,
+		"matched_sample":   matched,
+		"sections_diag":    diag,
+	})
+}
+
+// inPlex reports whether an arr folder path is covered by the Plex path index.
+func inPlex(dirs map[string]bool, folder string) bool {
+	if folder == "" || len(dirs) == 0 {
+		return false
+	}
+	return dirs[strings.TrimRight(folder, "/")]
 }
 
 func clearArrFileCache(kind, instance string, id int) {
@@ -197,26 +478,26 @@ func arrCommand(w http.ResponseWriter, req *http.Request) {
 	id := strconv.Itoa(b.ID)
 	sonarr := b.Kind == "sonarr"
 
-	var rc int
+	var ok bool
 	var out string
 	switch b.Action {
 	case "refresh":
 		if sonarr {
-			rc, out = arrSend(*inst, "POST", "command", `{"name":"RefreshSeries","seriesId":`+id+`}`)
+			ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"RefreshSeries","seriesId":`+id+`}`)
 		} else {
-			rc, out = arrSend(*inst, "POST", "command", `{"name":"RefreshMovie","movieIds":[`+id+`]}`)
+			ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"RefreshMovie","movieIds":[`+id+`]}`)
 		}
 	case "search":
 		if sonarr {
-			rc, out = arrSend(*inst, "POST", "command", `{"name":"SeriesSearch","seriesId":`+id+`}`)
+			ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"SeriesSearch","seriesId":`+id+`}`)
 		} else {
-			rc, out = arrSend(*inst, "POST", "command", `{"name":"MoviesSearch","movieIds":[`+id+`]}`)
+			ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"MoviesSearch","movieIds":[`+id+`]}`)
 		}
 	case "rename":
 		if sonarr {
-			rc, out = arrSend(*inst, "POST", "command", `{"name":"RenameSeries","seriesIds":[`+id+`]}`)
+			ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"RenameSeries","seriesIds":[`+id+`]}`)
 		} else {
-			rc, out = arrSend(*inst, "POST", "command", `{"name":"RenameMovie","movieIds":[`+id+`]}`)
+			ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"RenameMovie","movieIds":[`+id+`]}`)
 		}
 		clearArrFileCache(b.Kind, b.Instance, b.ID)
 	case "monitor", "unmonitor":
@@ -224,8 +505,8 @@ func arrCommand(w http.ResponseWriter, req *http.Request) {
 		if !sonarr {
 			obj = "movie/" + id
 		}
-		grc, gout := arrGet(*inst, obj)
-		if grc != 0 {
+		gok, gout := arrGetRaw(*inst, obj)
+		if !gok {
 			http.Error(w, "fetch failed", http.StatusBadGateway)
 			return
 		}
@@ -236,29 +517,29 @@ func arrCommand(w http.ResponseWriter, req *http.Request) {
 		}
 		m["monitored"] = b.Action == "monitor"
 		body, _ := json.Marshal(m)
-		rc, out = arrSend(*inst, "PUT", obj, string(body))
+		ok, out = arrSendRaw(*inst, "PUT", obj, string(body))
 	case "episodeSearch": // sonarr only
-		rc, out = arrSend(*inst, "POST", "command", `{"name":"EpisodeSearch","episodeIds":[`+strconv.Itoa(b.EpisodeID)+`]}`)
+		ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"EpisodeSearch","episodeIds":[`+strconv.Itoa(b.EpisodeID)+`]}`)
 	case "seasonSearch": // sonarr only
 		if b.Season == nil {
 			http.Error(w, "season required", http.StatusBadRequest)
 			return
 		}
-		rc, out = arrSend(*inst, "POST", "command", `{"name":"SeasonSearch","seriesId":`+id+`,"seasonNumber":`+strconv.Itoa(*b.Season)+`}`)
+		ok, out = arrSendRaw(*inst, "POST", "command", `{"name":"SeasonSearch","seriesId":`+id+`,"seasonNumber":`+strconv.Itoa(*b.Season)+`}`)
 	case "deleteFile":
 		ep := "episodefile/" + strconv.Itoa(b.FileID)
 		if !sonarr {
 			ep = "moviefile/" + strconv.Itoa(b.FileID)
 		}
-		rc, out = arrSend(*inst, "DELETE", ep, "")
+		ok, out = arrSendRaw(*inst, "DELETE", ep, "")
 		clearArrFileCache(b.Kind, b.Instance, b.ID)
 	case "seasonMonitor", "seasonUnmonitor": // sonarr only
 		if b.Season == nil {
 			http.Error(w, "season required", http.StatusBadRequest)
 			return
 		}
-		grc, gout := arrGet(*inst, "series/"+id)
-		if grc != 0 {
+		gok, gout := arrGetRaw(*inst, "series/"+id)
+		if !gok {
 			http.Error(w, "fetch failed", http.StatusBadGateway)
 			return
 		}
@@ -277,12 +558,12 @@ func arrCommand(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		body, _ := json.Marshal(m)
-		rc, out = arrSend(*inst, "PUT", "series/"+id, string(body))
+		ok, out = arrSendRaw(*inst, "PUT", "series/"+id, string(body))
 	default:
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
 	}
-	if rc != 0 {
+	if !ok {
 		http.Error(w, "command failed: "+strings.TrimSpace(out), http.StatusBadGateway)
 		return
 	}
@@ -292,17 +573,26 @@ func arrCommand(w http.ResponseWriter, req *http.Request) {
 // arrProfiles maps qualityProfileId → name for one instance.
 func arrProfiles(inst arrInstance) map[int]string {
 	m := map[int]string{}
-	rc, out := arrGet(inst, "qualityprofile")
-	if rc != 0 {
-		return m
-	}
-	var profs []struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	}
-	_ = json.Unmarshal([]byte(out), &profs)
-	for _, p := range profs {
-		m[p.ID] = p.Name
+	arrSem <- struct{}{}
+	defer func() { <-arrSem }()
+	ctx, cancel := arrCtx()
+	defer cancel()
+	if inst.Kind == "sonarr" {
+		profs, _, err := sonarrClient(inst).QualityProfileAPI.ListQualityProfile(ctx).Execute()
+		if err != nil {
+			return m
+		}
+		for _, p := range profs {
+			m[int(p.GetId())] = p.GetName()
+		}
+	} else {
+		profs, _, err := radarrClient(inst).QualityProfileAPI.ListQualityProfile(ctx).Execute()
+		if err != nil {
+			return m
+		}
+		for _, p := range profs {
+			m[int(p.GetId())] = p.GetName()
+		}
 	}
 	return m
 }
@@ -314,6 +604,8 @@ type arrCopy struct {
 	Files    int    `json:"files"`
 	Size     int64  `json:"size"`
 	HasFile  bool   `json:"has_file"`
+	InPlex   bool   `json:"in_plex"`          // this copy's folder is in Plex
+	Folder   string `json:"folder,omitempty"` // arr folder (for targeted Plex refresh)
 }
 
 type arrItem struct {
@@ -331,21 +623,8 @@ type arrItem struct {
 	Genres    []string  `json:"genres"`    //
 	Seasons   int       `json:"seasons"`   // sonarr season count
 	Episodes  int       `json:"episodes"`  // sonarr episode count (have-file)
+	InPlex    bool      `json:"in_plex"`   // any copy is in Plex
 	Copies    []arrCopy `json:"copies"`
-}
-
-// imgPoster returns the browser-loadable poster URL from an arr images array.
-func imgPoster(images []struct {
-	CoverType string `json:"coverType"`
-	RemoteURL string `json:"remoteUrl"`
-	URL       string `json:"url"`
-}) string {
-	for _, im := range images {
-		if im.CoverType == "poster" && im.RemoteURL != "" {
-			return im.RemoteURL
-		}
-	}
-	return ""
 }
 
 func arrInstanceByName(kind, name string) *arrInstance {
@@ -382,100 +661,59 @@ func arrLibrary(w http.ResponseWriter, _ *http.Request) {
 		mu.Unlock()
 	}
 
-	type imgT = []struct {
-		CoverType string `json:"coverType"`
-		RemoteURL string `json:"remoteUrl"`
-		URL       string `json:"url"`
-	}
-
 	var wg sync.WaitGroup
 	for _, inst := range insts {
 		wg.Add(1)
 		go func(inst arrInstance) {
 			defer wg.Done()
 			profiles := arrProfiles(inst)
+			ctx, cancel := arrCtx()
+			defer cancel()
+			arrSem <- struct{}{}
 			if inst.Kind == "sonarr" {
-				rc, out := arrGet(inst, "series")
-				if rc != 0 {
+				series, _, err := sonarrClient(inst).SeriesAPI.ListSeries(ctx).Execute()
+				<-arrSem
+				if err != nil {
 					return
 				}
-				var series []struct {
-					ID               int      `json:"id"`
-					Title            string   `json:"title"`
-					Year             int      `json:"year"`
-					TvdbID           int      `json:"tvdbId"`
-					QualityProfileID int      `json:"qualityProfileId"`
-					Overview         string   `json:"overview"`
-					Status           string   `json:"status"`
-					Network          string   `json:"network"`
-					Runtime          int      `json:"runtime"`
-					Monitored        bool     `json:"monitored"`
-					Genres           []string `json:"genres"`
-					Images           imgT     `json:"images"`
-					Ratings          struct {
-						Value float64 `json:"value"`
-					} `json:"ratings"`
-					Statistics struct {
-						SeasonCount      int   `json:"seasonCount"`
-						EpisodeCount     int   `json:"episodeCount"`
-						EpisodeFileCount int   `json:"episodeFileCount"`
-						SizeOnDisk       int64 `json:"sizeOnDisk"`
-					} `json:"statistics"`
-				}
-				_ = json.Unmarshal([]byte(out), &series)
-				for _, s := range series {
+				for i := range series {
+					s := series[i]
+					st := s.GetStatistics()
+					rat := s.GetRatings()
 					add(arrItem{
-						Kind: "sonarr", Key: strconv.Itoa(s.TvdbID), Title: s.Title, Year: s.Year,
-						Poster: imgPoster(s.Images), Overview: s.Overview, Status: s.Status,
-						Network: s.Network, Runtime: s.Runtime, Rating: s.Ratings.Value,
-						Monitored: s.Monitored, Genres: s.Genres,
-						Seasons: s.Statistics.SeasonCount, Episodes: s.Statistics.EpisodeCount,
+						Kind: "sonarr", Key: strconv.Itoa(int(s.GetTvdbId())), Title: s.GetTitle(), Year: int(s.GetYear()),
+						Poster: sonarrPoster(s.GetImages()), Overview: s.GetOverview(), Status: string(s.GetStatus()),
+						Network: s.GetNetwork(), Runtime: int(s.GetRuntime()), Rating: rat.GetValue(),
+						Monitored: s.GetMonitored(), Genres: s.GetGenres(),
+						Seasons: int(st.GetSeasonCount()), Episodes: int(st.GetEpisodeCount()),
 					}, arrCopy{
-						Instance: inst.Name, ItemID: s.ID, Profile: profiles[s.QualityProfileID],
-						Files: s.Statistics.EpisodeFileCount, Size: s.Statistics.SizeOnDisk,
-						HasFile: s.Statistics.EpisodeFileCount > 0,
+						Instance: inst.Name, ItemID: int(s.GetId()), Profile: profiles[int(s.GetQualityProfileId())],
+						Files: int(st.GetEpisodeFileCount()), Size: st.GetSizeOnDisk(),
+						HasFile: st.GetEpisodeFileCount() > 0, Folder: s.GetPath(),
 					})
 				}
 			} else {
-				rc, out := arrGet(inst, "movie")
-				if rc != 0 {
+				movies, _, err := radarrClient(inst).MovieAPI.ListMovie(ctx).Execute()
+				<-arrSem
+				if err != nil {
 					return
 				}
-				var movies []struct {
-					ID               int      `json:"id"`
-					Title            string   `json:"title"`
-					Year             int      `json:"year"`
-					TmdbID           int      `json:"tmdbId"`
-					QualityProfileID int      `json:"qualityProfileId"`
-					Overview         string   `json:"overview"`
-					Status           string   `json:"status"`
-					Studio           string   `json:"studio"`
-					Runtime          int      `json:"runtime"`
-					Monitored        bool     `json:"monitored"`
-					Genres           []string `json:"genres"`
-					Images           imgT     `json:"images"`
-					Ratings          struct {
-						Tmdb struct {
-							Value float64 `json:"value"`
-						} `json:"tmdb"`
-					} `json:"ratings"`
-					HasFile    bool  `json:"hasFile"`
-					SizeOnDisk int64 `json:"sizeOnDisk"`
-				}
-				_ = json.Unmarshal([]byte(out), &movies)
-				for _, m := range movies {
+				for i := range movies {
+					m := movies[i]
 					files := 0
-					if m.HasFile {
+					if m.GetHasFile() {
 						files = 1
 					}
+					rat := m.GetRatings()
+					tmdb := rat.GetTmdb()
 					add(arrItem{
-						Kind: "radarr", Key: strconv.Itoa(m.TmdbID), Title: m.Title, Year: m.Year,
-						Poster: imgPoster(m.Images), Overview: m.Overview, Status: m.Status,
-						Network: m.Studio, Runtime: m.Runtime, Rating: m.Ratings.Tmdb.Value,
-						Monitored: m.Monitored, Genres: m.Genres,
+						Kind: "radarr", Key: strconv.Itoa(int(m.GetTmdbId())), Title: m.GetTitle(), Year: int(m.GetYear()),
+						Poster: radarrPoster(m.GetImages()), Overview: m.GetOverview(), Status: string(m.GetStatus()),
+						Network: m.GetStudio(), Runtime: int(m.GetRuntime()), Rating: tmdb.GetValue(),
+						Monitored: m.GetMonitored(), Genres: m.GetGenres(),
 					}, arrCopy{
-						Instance: inst.Name, ItemID: m.ID, Profile: profiles[m.QualityProfileID],
-						Files: files, Size: m.SizeOnDisk, HasFile: m.HasFile,
+						Instance: inst.Name, ItemID: int(m.GetId()), Profile: profiles[int(m.GetQualityProfileId())],
+						Files: files, Size: m.GetSizeOnDisk(), HasFile: m.GetHasFile(), Folder: m.GetPath(),
 					})
 				}
 			}
@@ -483,9 +721,14 @@ func arrLibrary(w http.ResponseWriter, _ *http.Request) {
 	}
 	wg.Wait()
 
+	pids := plexIDsCached() // match in-Plex by the tvdb/tmdb id (paths roots differ)
 	items := make([]*arrItem, 0, len(groups))
 	for _, g := range groups {
 		sort.Slice(g.Copies, func(i, j int) bool { return g.Copies[i].Instance < g.Copies[j].Instance })
+		g.InPlex = itemInPlex(pids, g)
+		for i := range g.Copies {
+			g.Copies[i].InPlex = g.InPlex
+		}
 		items = append(items, g)
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -525,7 +768,7 @@ func prewarmArrFiles(items []*arrItem, insts []arrInstance) {
 			if n++; n > 1000 { // safety cap for huge libraries
 				return
 			}
-			go fetchArrFiles(inst, it.Kind, strconv.Itoa(c.ItemID))
+			go fetchArrFiles(inst, it.Kind, strconv.Itoa(c.ItemID), it.Key)
 		}
 	}
 }
@@ -550,6 +793,7 @@ type arrFile struct {
 	AirDate      string    `json:"air_date,omitempty"`
 	Monitored    bool      `json:"monitored"`
 	HasFile      bool      `json:"has_file"`
+	InPlex       bool      `json:"in_plex"` // this file present in Plex (per-episode)
 	Quality      string    `json:"quality,omitempty"`
 	Size         int64     `json:"size"`
 	Path         string    `json:"path,omitempty"`      // relative
@@ -558,64 +802,6 @@ type arrFile struct {
 	Languages    string    `json:"languages,omitempty"`
 	DateAdded    string    `json:"date_added,omitempty"`
 	Media        *arrMedia `json:"media,omitempty"`
-}
-
-// arrRawFile is the episodeFile/movieFile shape both Sonarr and Radarr return.
-type arrRawFile struct {
-	ID           int    `json:"id"`
-	RelativePath string `json:"relativePath"`
-	Path         string `json:"path"`
-	Size         int64  `json:"size"`
-	DateAdded    string `json:"dateAdded"`
-	ReleaseGroup string `json:"releaseGroup"`
-	Languages    []struct {
-		Name string `json:"name"`
-	} `json:"languages"`
-	Quality struct {
-		Quality struct {
-			Name string `json:"name"`
-		} `json:"quality"`
-	} `json:"quality"`
-	MediaInfo struct {
-		Resolution        string  `json:"resolution"`
-		VideoCodec        string  `json:"videoCodec"`
-		VideoDynamicRange string  `json:"videoDynamicRange"`
-		AudioCodec        string  `json:"audioCodec"`
-		AudioChannels     float64 `json:"audioChannels"`
-		AudioLanguages    string  `json:"audioLanguages"`
-		Subtitles         string  `json:"subtitles"`
-		RunTime           string  `json:"runTime"`
-	} `json:"mediaInfo"`
-}
-
-// applyFile copies a raw episode/movie file's details onto an arrFile.
-func applyFile(a *arrFile, f arrRawFile) {
-	a.FileID = f.ID
-	a.HasFile = true
-	a.Quality = f.Quality.Quality.Name
-	a.Size = f.Size
-	a.Path = f.RelativePath
-	if a.Path == "" {
-		a.Path = f.Path
-	}
-	a.FullPath = f.Path
-	a.ReleaseGroup = f.ReleaseGroup
-	a.DateAdded = f.DateAdded
-	langs := make([]string, 0, len(f.Languages))
-	for _, l := range f.Languages {
-		if l.Name != "" {
-			langs = append(langs, l.Name)
-		}
-	}
-	a.Languages = strings.Join(langs, ", ")
-	mi := f.MediaInfo
-	if mi.VideoCodec != "" || mi.Resolution != "" || mi.AudioCodec != "" {
-		a.Media = &arrMedia{
-			Resolution: mi.Resolution, VideoCodec: mi.VideoCodec, DynamicRange: mi.VideoDynamicRange,
-			AudioCodec: mi.AudioCodec, AudioChannels: mi.AudioChannels, AudioLanguages: mi.AudioLanguages,
-			Subtitles: mi.Subtitles, Runtime: mi.RunTime,
-		}
-	}
 }
 
 // Server-side cache of per-item file lists — a drill-down only hits the arr API
@@ -632,7 +818,7 @@ type arrFileEntry struct {
 
 const arrFileTTL = 5 * time.Minute
 
-func fetchArrFiles(inst arrInstance, kind, id string) ([]arrFile, bool) {
+func fetchArrFiles(inst arrInstance, kind, id, extID string) ([]arrFile, bool) {
 	ck := kind + "|" + inst.Name + "|" + id
 	arrFileMu.Lock()
 	if e, ok := arrFileCache[ck]; ok && time.Since(e.ts) < arrFileTTL {
@@ -641,31 +827,26 @@ func fetchArrFiles(inst arrInstance, kind, id string) ([]arrFile, bool) {
 	}
 	arrFileMu.Unlock()
 
+	idN, _ := strconv.Atoi(id)
+	arrSem <- struct{}{}
+	ctx, cancel := arrCtx()
 	var files []arrFile
 	if kind == "sonarr" {
 		// One call returns every episode + its file (incl. missing episodes) — the
 		// data the Prismarr-style collapsible season/episode view needs.
-		rc, out := arrGet(inst, "episode?seriesId="+id+"&includeEpisodeFile=true")
-		if rc != 0 {
+		eps, _, err := sonarrClient(inst).EpisodeAPI.ListEpisode(ctx).SeriesId(int32(idN)).IncludeEpisodeFile(true).Execute()
+		cancel()
+		<-arrSem
+		if err != nil {
 			return nil, false
 		}
-		var eps []struct {
-			ID            int        `json:"id"`
-			SeasonNumber  int        `json:"seasonNumber"`
-			EpisodeNumber int        `json:"episodeNumber"`
-			Title         string     `json:"title"`
-			AirDate       string     `json:"airDate"`
-			Monitored     bool       `json:"monitored"`
-			HasFile       bool       `json:"hasFile"`
-			EpisodeFile   arrRawFile `json:"episodeFile"`
-		}
-		_ = json.Unmarshal([]byte(out), &eps)
 		for i := range eps {
 			e := eps[i]
-			sn, en := e.SeasonNumber, e.EpisodeNumber
-			af := arrFile{Season: &sn, Episode: &en, EpisodeID: e.ID, Title: e.Title, AirDate: e.AirDate, Monitored: e.Monitored}
-			if e.HasFile {
-				applyFile(&af, e.EpisodeFile)
+			sn, en := int(e.GetSeasonNumber()), int(e.GetEpisodeNumber())
+			af := arrFile{Season: &sn, Episode: &en, EpisodeID: int(e.GetId()), Title: e.GetTitle(), AirDate: e.GetAirDate(), Monitored: e.GetMonitored()}
+			if e.GetHasFile() {
+				ef := e.GetEpisodeFile()
+				applySonarrFile(&af, ef)
 			}
 			files = append(files, af)
 		}
@@ -676,16 +857,34 @@ func fetchArrFiles(inst arrInstance, kind, id string) ([]arrFile, bool) {
 			return *files[i].Episode < *files[j].Episode
 		})
 	} else {
-		rc, out := arrGet(inst, "moviefile?movieId="+id)
-		if rc != 0 {
+		raw, _, err := radarrClient(inst).MovieFileAPI.ListMovieFile(ctx).MovieId([]int32{int32(idN)}).Execute()
+		cancel()
+		<-arrSem
+		if err != nil {
 			return nil, false
 		}
-		var raw []arrRawFile
-		_ = json.Unmarshal([]byte(out), &raw)
-		for _, r := range raw {
+		for i := range raw {
 			var af arrFile
-			applyFile(&af, r)
+			applyRadarrFile(&af, raw[i])
 			files = append(files, af)
+		}
+	}
+
+	// Per-file Plex presence: sonarr → basename match against the show's Plex
+	// episodes; radarr → the movie's tmdb is in Plex.
+	if extID != "" && loadOptions().Plex.URL != "" {
+		if kind == "sonarr" {
+			if bn := plexShowEpisodeBasenames(extID); len(bn) > 0 {
+				for i := range files {
+					if files[i].HasFile && bn[path.Base(files[i].Path)] {
+						files[i].InPlex = true
+					}
+				}
+			}
+		} else if plexIDsCached().Tmdb[extID] {
+			for i := range files {
+				files[i].InPlex = true
+			}
 		}
 	}
 
@@ -700,6 +899,7 @@ func arrFiles(w http.ResponseWriter, req *http.Request) {
 	kind := req.URL.Query().Get("kind")
 	name := req.URL.Query().Get("instance")
 	id := req.URL.Query().Get("id")
+	ext := req.URL.Query().Get("ext") // tvdb/tmdb id for per-file Plex check
 	if id == "" {
 		http.Error(w, "id required", http.StatusBadRequest)
 		return
@@ -709,7 +909,7 @@ func arrFiles(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
-	files, ok := fetchArrFiles(*inst, kind, id)
+	files, ok := fetchArrFiles(*inst, kind, id, ext)
 	if !ok {
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return

@@ -8,11 +8,11 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useArrLibrary, useArrFiles, useArrCommand, type ArrItem, type ArrCopy, type ArrFile } from '@/lib/api'
+import { useArrLibrary, useArrFiles, useArrCommand, useArrPlexRefresh, type ArrItem, type ArrCopy, type ArrFile } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
-import { Library as LibraryIcon, Loader2, ChevronRight, Tv, Film, Star, Check, Bookmark, RotateCw, Search, Pencil, Trash2 } from 'lucide-react'
+import { Library as LibraryIcon, Loader2, ChevronRight, Tv, Film, Star, Check, Bookmark, RotateCw, Search, Pencil, Trash2, RefreshCcw } from 'lucide-react'
 import { cn } from '@/lib/cn'
 
 const PAGE = 120
@@ -26,7 +26,7 @@ function fmtSize(n: number): string {
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${u[i]}`
 }
 
-type Status = 'all' | 'continuing' | 'ended' | 'monitored' | 'unmonitored' | 'missing'
+type Status = 'all' | 'continuing' | 'ended' | 'monitored' | 'unmonitored' | 'missing' | 'in_plex' | 'not_plex'
 const STATUS_BTNS: { key: Status; label: string; active: string }[] = [
   { key: 'all', label: 'All', active: 'bg-secondary text-secondary-foreground border-secondary' },
   { key: 'continuing', label: 'Continuing', active: 'bg-success text-white border-success' },
@@ -34,6 +34,8 @@ const STATUS_BTNS: { key: Status; label: string; active: string }[] = [
   { key: 'monitored', label: 'Monitored', active: 'bg-primary text-primary-foreground border-primary' },
   { key: 'unmonitored', label: 'Unmonitored', active: 'bg-secondary text-secondary-foreground border-secondary' },
   { key: 'missing', label: 'Missing', active: 'bg-destructive text-white border-destructive' },
+  { key: 'in_plex', label: 'In Plex', active: 'bg-[#e5a00d] text-black border-[#e5a00d]' },
+  { key: 'not_plex', label: 'Not in Plex', active: 'bg-secondary text-secondary-foreground border-secondary' },
 ]
 
 function itemComplete(i: ArrItem) { return i.copies.length > 0 && i.copies.every((c) => c.has_file) }
@@ -57,9 +59,12 @@ function PosterCard({ item, onOpen }: { item: ArrItem; onOpen: () => void }) {
       {item.monitored && <Bookmark className="absolute left-1.5 top-0 h-5 w-5 fill-primary text-primary drop-shadow" />}
       {/* multi-instance badge */}
       {item.copies.length > 1 && <span className="absolute left-1.5 top-6 rounded bg-black/65 px-1 py-0.5 text-[9px] font-semibold text-white">×{item.copies.length}</span>}
-      {/* status dot (top-right) */}
+      {/* status dot (top-right): file completeness */}
       <span className={cn('absolute right-1.5 top-1.5 h-3 w-3 rounded-full ring-2 ring-black/40',
-        complete ? 'bg-success' : some ? 'bg-amber-500' : 'bg-destructive')} />
+        complete ? 'bg-success' : some ? 'bg-amber-500' : 'bg-destructive')}
+        title={complete ? 'Complete in all copies' : some ? 'Partial' : 'No files'} />
+      {/* in-Plex badge */}
+      {item.in_plex && <span className="absolute right-1.5 top-6 rounded bg-[#e5a00d] px-1 py-0.5 text-[8px] font-bold leading-none text-black ring-1 ring-black/30" title="Available in Plex">PLEX</span>}
 
       {/* bottom gradient + title */}
       <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-2 pt-6">
@@ -105,6 +110,7 @@ function EpisodeRow({ f, sonarr, run, busy }: {
   busy: string
 }) {
   const [det, setDet] = useState(false)
+  const pref = useArrPlexRefresh()
   const m = f.media
   const kv: [string, string][] = []
   if (m?.resolution) kv.push(['Resolution', m.resolution])
@@ -126,6 +132,9 @@ function EpisodeRow({ f, sonarr, run, busy }: {
           <span className="flex-1 min-w-0 truncate text-foreground" title={f.full_path || f.path || f.title}>{f.title || f.path || '—'}</span>
           {f.air_date && <span className="shrink-0 text-muted-foreground tabular-nums hidden md:inline">{f.air_date}</span>}
           {f.quality && <span className="shrink-0 rounded bg-accent px-1.5 py-0.5 text-muted-foreground">{f.quality}</span>}
+          {f.has_file && (f.in_plex
+            ? <span className="shrink-0 rounded bg-[#e5a00d] px-1 py-0.5 text-[9px] font-bold leading-none text-black" title="In Plex">PLEX</span>
+            : <span className="shrink-0 rounded bg-amber-500/20 px-1 py-0.5 text-[9px] font-semibold leading-none text-amber-600" title="Downloaded but not in Plex">NO PLEX</span>)}
           {f.has_file && <span className="shrink-0 tabular-nums text-muted-foreground w-16 text-right">{fmtSize(f.size)}</span>}
         </button>
         <span className="flex items-center gap-0.5 shrink-0">
@@ -133,6 +142,13 @@ function EpisodeRow({ f, sonarr, run, busy }: {
             <button title="Search episode" disabled={!!busy} onClick={() => run('episodeSearch', { episode_id: f.episode_id })}
               className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40">
               {busy === `episodeSearch:${f.episode_id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Search className="h-3 w-3" />}
+            </button>
+          ) : null}
+          {f.has_file && !f.in_plex && f.full_path ? (
+            <button title="Refresh this file in Plex" disabled={pref.isPending}
+              onClick={() => pref.mutate({ path: f.full_path! })}
+              className="rounded p-0.5 text-[#e5a00d] hover:bg-[#e5a00d]/15 disabled:opacity-40">
+              {pref.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCcw className="h-3 w-3" />}
             </button>
           ) : null}
           {f.has_file && f.file_id ? (
@@ -198,11 +214,11 @@ function SeasonBlock({ kind, copy, season, files, defaultOpen, run, busy }: {
   )
 }
 
-function CopyFiles({ kind, copy }: { kind: string; copy: ArrCopy }) {
+function CopyFiles({ kind, copy, ext }: { kind: string; copy: ArrCopy; ext: string }) {
   const qc = useQueryClient()
   const cmd = useArrCommand()
   const [busy, setBusy] = useState('')
-  const { data, isLoading, isError } = useArrFiles(kind, copy.instance, copy.item_id, true)
+  const { data, isLoading, isError } = useArrFiles(kind, copy.instance, copy.item_id, true, ext)
   const run = (action: string, extra: { episode_id?: number; file_id?: number; season?: number }, confirmMsg?: string) => {
     if (confirmMsg && !confirm(confirmMsg)) return
     const tag = `${action}:${extra.episode_id ?? extra.file_id ?? extra.season ?? ''}`
@@ -225,10 +241,11 @@ function CopyFiles({ kind, copy }: { kind: string; copy: ArrCopy }) {
   )
 }
 
-function CopyRow({ kind, copy }: { kind: string; copy: ArrCopy }) {
+function CopyRow({ kind, copy, ext }: { kind: string; copy: ArrCopy; ext: string }) {
   const [open, setOpen] = useState(false)
   const qc = useQueryClient()
   const cmd = useArrCommand()
+  const pref = useArrPlexRefresh()
   const [busy, setBusy] = useState('')
   const [done, setDone] = useState('')
 
@@ -262,6 +279,7 @@ function CopyRow({ kind, copy }: { kind: string; copy: ArrCopy }) {
           <span className={cn('h-2 w-2 rounded-full shrink-0', copy.has_file ? 'bg-success' : 'bg-destructive')} />
           <span className="font-medium text-foreground text-xs w-28 shrink-0 truncate">{copy.instance}</span>
           {copy.profile && <span className="rounded bg-primary/10 text-foreground px-1.5 py-0.5 text-[10px] shrink-0">{copy.profile}</span>}
+          {copy.in_plex && <span className="rounded bg-[#e5a00d] px-1 py-0.5 text-[9px] font-bold leading-none text-black shrink-0" title="In Plex">PLEX</span>}
           <span className="text-[11px] text-muted-foreground shrink-0">{copy.files} file{copy.files === 1 ? '' : 's'}</span>
           <span className="flex-1" />
           <span className="text-[11px] tabular-nums text-muted-foreground shrink-0">{fmtSize(copy.size)}</span>
@@ -272,11 +290,19 @@ function CopyRow({ kind, copy }: { kind: string; copy: ArrCopy }) {
           <Act action="search" title="Search" icon={<Search className="h-3.5 w-3.5" />} />
           <Act action="rename" title="Rename files" icon={<Pencil className="h-3.5 w-3.5" />} confirmMsg={`Rename files for ${copy.instance}? This moves files on disk.`} />
           <Act action="monitor" title="Monitor" icon={<Bookmark className="h-3.5 w-3.5" />} />
+          {copy.folder && (
+            <button title="Refresh this folder in Plex" disabled={pref.isPending} onClick={(e) => { e.stopPropagation(); pref.mutate({ path: copy.folder! }) }}
+              className="rounded p-1 text-[#e5a00d] hover:bg-[#e5a00d]/15 disabled:opacity-40">
+              {pref.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCcw className="h-3.5 w-3.5" />}
+            </button>
+          )}
         </div>
       </div>
       {done && <p className="px-3 pb-1 text-[10px] text-success">{done} triggered</p>}
+      {pref.isSuccess && <p className="px-3 pb-1 text-[10px] text-success">Plex refresh triggered</p>}
       {cmd.isError && <p className="px-3 pb-1 text-[10px] text-destructive break-all">{cmd.error.message}</p>}
-      {open && <div className="border-t border-border bg-muted/30"><CopyFiles kind={kind} copy={copy} /></div>}
+      {pref.isError && <p className="px-3 pb-1 text-[10px] text-destructive break-all">{pref.error.message}</p>}
+      {open && <div className="border-t border-border bg-muted/30"><CopyFiles kind={kind} copy={copy} ext={ext} /></div>}
     </div>
   )
 }
@@ -314,7 +340,7 @@ function DetailModal({ item, onClose }: { item: ArrItem | null; onClose: () => v
                   {item.copies.length} cop{item.copies.length === 1 ? 'y' : 'ies'} · {fmtSize(total)}
                 </h3>
                 <div className="space-y-1.5">
-                  {item.copies.map((c) => <CopyRow key={c.instance + c.item_id} kind={item.kind} copy={c} />)}
+                  {item.copies.map((c) => <CopyRow key={c.instance + c.item_id} kind={item.kind} copy={c} ext={item.key} />)}
                 </div>
               </div>
             </div>
@@ -361,6 +387,8 @@ function ItemGrid({ items, hasSonarr, hasRadarr }: { items: ArrItem[]; hasSonarr
         case 'monitored': if (!i.monitored) return false; break
         case 'unmonitored': if (i.monitored) return false; break
         case 'missing': if (itemComplete(i)) return false; break
+        case 'in_plex': if (!i.in_plex) return false; break
+        case 'not_plex': if (i.in_plex) return false; break
       }
       return true
     })

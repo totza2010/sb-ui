@@ -13,6 +13,7 @@ import { Files } from '@/pages/Files'
 import { Transfers } from '@/pages/Transfers'
 import { Uploader } from '@/pages/Uploader'
 import { Library } from '@/pages/Library'
+import { Integrations } from '@/pages/Integrations'
 import { TgDrive } from '@/pages/TgDrive'
 import { Settings } from '@/pages/Settings'
 import { ConnectionSetup } from '@/pages/ConnectionSetup'
@@ -67,6 +68,7 @@ function AppInner() {
             <Route path="/transfers" element={<Transfers />} />
             <Route path="/uploader" element={<Uploader />} />
             <Route path="/library" element={<Library />} />
+            <Route path="/integrations" element={<Integrations />} />
             <Route path="/tgdrive" element={<TgDrive />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/options" element={<Navigate to="/settings" replace />} />
