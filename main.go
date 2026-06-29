@@ -78,6 +78,12 @@ func spaHandler(dist fs.FS) http.HandlerFunc {
 	fileServer := http.FileServer(http.FS(dist))
 	index, _ := fs.ReadFile(dist, "index.html")
 	return func(w http.ResponseWriter, req *http.Request) {
+		// Unmatched API routes must 404 as JSON — never fall through to index.html,
+		// or the client tries to JSON-parse HTML ("Unexpected token '<'").
+		if strings.HasPrefix(req.URL.Path, "/api/") {
+			http.Error(w, `{"error":"not found: `+req.URL.Path+`"}`, http.StatusNotFound)
+			return
+		}
 		p := strings.TrimPrefix(req.URL.Path, "/")
 		if p == "" {
 			p = "index.html"
