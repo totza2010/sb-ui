@@ -28,9 +28,23 @@ type pathMapping struct {
 	To   string `json:"to"`   // Plex path prefix
 }
 
+// seerrConfig points at a Jellyseerr/Overseerr instance — used ONLY to submit
+// requests (its core job). Discover/detail metadata comes from TMDB directly.
+type seerrConfig struct {
+	URL    string `json:"url"`     // e.g. https://requests.example.com
+	APIKey string `json:"api_key"` // X-Api-Key
+}
+
+// tmdbConfig holds a TMDb v3 API key — the source of all Discover display metadata.
+type tmdbConfig struct {
+	APIKey string `json:"api_key"`
+}
+
 type optionsConfig struct {
 	Plex         plexConfig    `json:"plex"`
 	PathMappings []pathMapping `json:"path_mappings"`
+	Seerr        seerrConfig   `json:"seerr"`
+	Tmdb         tmdbConfig    `json:"tmdb"`
 }
 
 // mapArrPath rewrites an arr path to the Plex path using the longest matching

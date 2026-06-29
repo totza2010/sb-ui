@@ -255,6 +255,28 @@ func plexGroup(cfg plexConfig) integrationGroup {
 	return g
 }
 
+// seerrGroup reports Jellyseerr/Overseerr connectivity (used for discover + request).
+func seerrGroup(cfg seerrConfig) integrationGroup {
+	g := integrationGroup{Key: "seerr", Label: "Jellyseerr / Overseerr", Library: "github.com/devopsarr/seerr-go", Used: true}
+	if cfg.URL == "" {
+		g.Used = false
+		g.Note = "Not configured — set URL + API key in Settings → Seerr."
+		return g
+	}
+	g.Configured = true
+	cs := connStatus{Name: "seerr-go", BaseURL: cfg.URL}
+	start := time.Now()
+	v, err := seerrStatus(cfg)
+	cs.LatencyMS = time.Since(start).Milliseconds()
+	if err != nil {
+		cs.Error = trimErr(err.Error())
+	} else {
+		cs.OK, cs.Version = true, v
+	}
+	g.Instances = []connStatus{cs}
+	return g
+}
+
 // integrationsStatus reports live connection status for every client library.
 func integrationsStatus(w http.ResponseWriter, _ *http.Request) {
 	var groups []integrationGroup
@@ -285,12 +307,7 @@ func integrationsStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	wg.Wait()
 
-	// Seerr — not wired yet (Phase 2). Listed so the page is complete.
-	groups = append(groups, integrationGroup{
-		Key: "seerr", Label: "Jellyseerr / Overseerr", Library: "github.com/devopsarr/seerr-go",
-		Used: false, Configured: false,
-		Note: "Not configured yet — request/discovery integration is Phase 2.",
-	})
+	groups = append(groups, seerrGroup(loadOptions().Seerr))
 
 	order := map[string]int{"sonarr": 0, "radarr": 1, "prowlarr": 2, "whisparr": 3, "plex": 4, "seerr": 5}
 	sort.Slice(groups, func(i, j int) bool { return order[groups[i].Key] < order[groups[j].Key] })

@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Save, Plug, Loader2, Plus, Trash2, Wand2, ArrowRight } from 'lucide-react'
 
-const EMPTY: OptionsConfig = { plex: { url: '', token: '', throttle: false, max_streams: 1, scan_after_upload: true }, path_mappings: [] }
+const EMPTY: OptionsConfig = { plex: { url: '', token: '', throttle: false, max_streams: 1, scan_after_upload: true }, path_mappings: [], seerr: { url: '', api_key: '' } }
 
 export function OptionsPanel() {
   const qc = useQueryClient()
@@ -21,9 +21,11 @@ export function OptionsPanel() {
   const test = usePlexTest()
   const [cfg, setCfg] = useState<OptionsConfig>(EMPTY)
   const [saved, setSaved] = useState(false)
-  useEffect(() => { if (data) setCfg({ ...EMPTY, ...data, plex: { ...EMPTY.plex, ...data.plex } }) }, [data])
+  useEffect(() => { if (data) setCfg({ ...EMPTY, ...data, plex: { ...EMPTY.plex, ...data.plex }, seerr: { ...EMPTY.seerr!, ...data.seerr }, tmdb: { api_key: '', ...data.tmdb } }) }, [data])
 
   const up = (patch: Partial<OptionsConfig['plex']>) => setCfg((c) => ({ ...c, plex: { ...c.plex, ...patch } }))
+  const upSeerr = (patch: Partial<NonNullable<OptionsConfig['seerr']>>) => setCfg((c) => ({ ...c, seerr: { ...(c.seerr ?? { url: '', api_key: '' }), ...patch } }))
+  const upTmdb = (patch: Partial<NonNullable<OptionsConfig['tmdb']>>) => setCfg((c) => ({ ...c, tmdb: { ...(c.tmdb ?? { api_key: '' }), ...patch } }))
   const doSave = () => save.mutate(cfg, { onSuccess: () => { qc.invalidateQueries({ queryKey: ['options'] }); setSaved(true); setTimeout(() => setSaved(false), 2500) } })
 
   // path mappings (arr → Plex)
@@ -86,6 +88,32 @@ export function OptionsPanel() {
       </div>
 
       <PathMappings maps={maps} addMap={addMap} upMap={upMap} delMap={delMap} />
+
+      <div className="space-y-4 rounded-lg border border-border bg-card p-4">
+        <h2 className="text-sm font-semibold text-foreground">Discover &amp; Requests</h2>
+        <p className="text-[11px] text-muted-foreground">TMDb provides all Discover metadata; Jellyseerr/Overseerr handles requesting the files.</p>
+        <div className="space-y-1">
+          <Label className="text-[11px]">TMDb API key</Label>
+          <Input className="h-8 font-mono" type="password" value={cfg.tmdb?.api_key ?? ''} onChange={(e) => upTmdb({ api_key: e.target.value })} placeholder="themoviedb.org v3 API key"
+            autoComplete="new-password" name="tmdb-key" data-1p-ignore="true" data-lpignore="true" data-form-type="other" />
+          <p className="text-[10px] text-muted-foreground">Free key from themoviedb.org → Settings → API (same key Jellyseerr uses).</p>
+        </div>
+        <div className="h-px bg-border" />
+        <p className="text-[11px] font-medium text-foreground">Jellyseerr / Overseerr (requests)</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="space-y-1 sm:col-span-2">
+            <Label className="text-[11px]">Server URL</Label>
+            <Input className="h-8 font-mono" value={cfg.seerr?.url ?? ''} onChange={(e) => upSeerr({ url: e.target.value })} placeholder="https://requests.example.com"
+              autoComplete="off" name="seerr-url" data-1p-ignore="true" data-lpignore="true" data-form-type="other" />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-[11px]">API Key</Label>
+            <Input className="h-8 font-mono" type="password" value={cfg.seerr?.api_key ?? ''} onChange={(e) => upSeerr({ api_key: e.target.value })} placeholder="api key"
+              autoComplete="new-password" name="seerr-key" data-1p-ignore="true" data-lpignore="true" data-form-type="other" />
+          </div>
+        </div>
+        <p className="text-[11px] text-muted-foreground">Connection status shows on the Integrations page.</p>
+      </div>
     </div>
   )
 }

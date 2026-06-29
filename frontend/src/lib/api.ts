@@ -739,7 +739,75 @@ export const useProxySetOpts = () =>
 
 // Central options + Plex
 export interface PathMapping { from: string; to: string }
-export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean }; path_mappings?: PathMapping[] }
+export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean }; path_mappings?: PathMapping[]; seerr?: { url: string; api_key: string }; tmdb?: { api_key: string } }
+
+// Discover (TMDb) — titles to request (status: 0/1 requestable · 2/3 requested · 4/5 available)
+export interface SeerrItem { media_type: 'movie' | 'tv'; tmdb_id: number; title: string; year: string; poster: string; backdrop?: string; overview: string; vote: number; status: number }
+export interface DiscoverSection { key: string; title: string; items: SeerrItem[] }
+export interface DiscoverHome { hero_movie?: SeerrItem; hero_tv?: SeerrItem; sections: DiscoverSection[] }
+export const discoverHomeOpts = () => ({ queryKey: ['discover-home'], queryFn: () => request<DiscoverHome>('/discover/home') })
+export const discoverSearchOpts = (q: string) => ({
+  queryKey: ['discover-search', q],
+  queryFn: () => request<{ items: SeerrItem[] }>(`/discover/search?q=${encodeURIComponent(q)}`),
+  enabled: q.trim().length > 1,
+})
+export interface Genre { id: number; name: string }
+export interface DiscoverFilters { type: 'movie' | 'tv'; genres: string; year_min: string; year_max: string; vote_min: number; sort: string }
+export const discoverGenresOpts = (type: 'movie' | 'tv') => ({ queryKey: ['discover-genres', type], queryFn: () => request<{ genres: Genre[] }>(`/discover/genres?type=${type}`) })
+const exploreParams = (f: DiscoverFilters, page: number) =>
+  new URLSearchParams({ type: f.type, genres: f.genres, year_min: f.year_min, year_max: f.year_max, vote_min: f.vote_min ? String(f.vote_min) : '', sort: f.sort, page: String(page) }).toString()
+export const discoverExploreOpts = (f: DiscoverFilters, page: number) => ({
+  queryKey: ['discover-explore', f, page],
+  queryFn: () => request<{ items: SeerrItem[]; page: number; total_pages: number }>(`/discover/explore?${exploreParams(f, page)}`),
+})
+export interface TmdbSuggestion { id: number; name: string; image: string; known_for?: string }
+export const discoverLibraryOpts = (type: 'movie' | 'tv') => ({ queryKey: ['discover-library', type], queryFn: () => request<{ items: SeerrItem[] }>(`/discover/library?type=${type}`), staleTime: 60_000 })
+export const discoverCollectionOpts = (id: number) => ({ queryKey: ['discover-collection', id], queryFn: () => request<{ name: string; items: SeerrItem[] }>(`/discover/collection?id=${id}`), enabled: id > 0 })
+export const discoverPersonOpts = (id: number) => ({ queryKey: ['discover-person', id], queryFn: () => request<{ items: SeerrItem[] }>(`/discover/person?id=${id}`), enabled: id > 0 })
+export const collectionSearchOpts = (q: string) => ({ queryKey: ['collection-search', q], queryFn: () => request<{ results: TmdbSuggestion[] }>(`/discover/collections?q=${encodeURIComponent(q)}`), enabled: q.trim().length > 1 })
+export const personSearchOpts = (q: string) => ({ queryKey: ['person-search', q], queryFn: () => request<{ results: TmdbSuggestion[] }>(`/discover/persons?q=${encodeURIComponent(q)}`), enabled: q.trim().length > 1 })
+export const watchlistOpts = () => ({ queryKey: ['watchlist'], queryFn: () => request<{ items: SeerrItem[] }>('/watchlist') })
+export const useWatchlistToggle = () =>
+  useMutation<{ action: string }, Error, SeerrItem>({ mutationFn: (it) => request('/watchlist/toggle', { method: 'POST', body: JSON.stringify(it) }) })
+export interface RequestProfile { id: number; name: string }
+export interface RequestFolder { id: number; path: string }
+export interface RequestServer {
+  id: number; name: string; is4k: boolean; is_default: boolean
+  default_profile_id: number; default_root: string; default_lang_profile_id: number
+  profiles: RequestProfile[]; root_folders: RequestFolder[]; lang_profiles: RequestProfile[]
+}
+export interface RequestUser { id: number; name: string; email: string }
+export const requestOptionsOpts = (type: 'movie' | 'tv') => ({
+  queryKey: ['request-options', type],
+  queryFn: () => request<{ servers: RequestServer[]; users: RequestUser[] }>(`/seerr/request-options?type=${type}`),
+})
+export interface SeerrRequestBody {
+  media_type: string; tmdb_id: number; tvdb_id?: number
+  server_id?: number; profile_id?: number; root_folder?: string
+  language_profile_id?: number; is4k?: boolean; user_id?: number; seasons?: number[]
+}
+export const useSeerrRequest = () =>
+  useMutation<{ ok: boolean }, Error, SeerrRequestBody>({
+    mutationFn: (b) => request('/seerr/request', { method: 'POST', body: JSON.stringify(b) }),
+  })
+export interface SeerrCast { name: string; character: string; profile: string }
+export interface SeerrEpisode { code: string; name: string; date: string }
+export interface SeerrSeason { number: number; name: string; episodes: number; poster: string; date: string; status: number }
+export interface SeerrCompany { name: string; logo?: string }
+export interface SeerrVideo { name: string; key: string; type: string }
+export interface SeerrDetail {
+  media_type: 'movie' | 'tv'; tmdb_id: number; imdb_id?: string; title: string; tagline: string; year: string; overview: string
+  backdrop: string; poster: string; genres: string[]; vote: number; vote_count: number; popularity: number
+  status: number; status_text: string; release_date: string; language: string; languages: string; country: string
+  rating?: string; homepage?: string; runtime?: number; seasons?: number; episodes?: number; trailer?: string; videos?: SeerrVideo[]
+  creators?: string[]; studios?: SeerrCompany[]; networks?: SeerrCompany[]; tags?: string[]
+  next_episode?: SeerrEpisode; last_episode?: SeerrEpisode; season_list?: SeerrSeason[]
+  watch_flatrate?: SeerrCompany[]; watch_buy?: SeerrCompany[]; cast: SeerrCast[]
+}
+export const seerrDetailOpts = (type: 'movie' | 'tv', id: number) => ({
+  queryKey: ['discover-detail', type, id],
+  queryFn: () => request<SeerrDetail>(`/discover/detail?type=${type}&id=${id}`),
+})
 export const usePathmapSuggest = () =>
   useQuery<{ arr_roots: string[]; plex_roots: string[] }>({ queryKey: ['pathmap-suggest'], queryFn: () => request('/arr/pathmap-suggest') })
 export const useOptions = () =>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -154,6 +155,139 @@ func fillArrFile(a *arrFile, id int, relPath, fpath string, size int64, dateAdde
 	}
 	a.Languages = strings.Join(langs, ", ")
 	a.Media = mi
+}
+
+// seriesStatus maps a Sonarr series to an Overseerr-style availability code based
+// on its episode-file statistics: 5 when every monitored aired episode is on disk,
+// 4 when only some are, 3 when the series exists but has no files yet.
+func seriesStatus(s *sonarr.SeriesResource) int {
+	stat, ok := s.GetStatisticsOk()
+	if !ok || stat == nil {
+		return 3
+	}
+	fc := stat.GetEpisodeFileCount()
+	ec := stat.GetEpisodeCount() // monitored + aired episodes
+	switch {
+	case fc <= 0:
+		return 3
+	case ec > 0 && fc >= ec:
+		return 5
+	default:
+		return 4
+	}
+}
+
+// yearStr renders a non-zero year as a 4-digit string ("" for 0).
+func yearStr(y int32) string {
+	if y <= 0 {
+		return ""
+	}
+	return strconv.Itoa(int(y))
+}
+
+// sonarrLibItems builds discover items straight from a Sonarr library (title, poster,
+// rating, per-series availability) — far cheaper than fetching all of TMDb and
+// filtering, when the user only wants in-library / partial titles.
+func sonarrLibItems(inst arrInstance) []seerrItem {
+	ctx, cancel := arrCtx()
+	defer cancel()
+	series, _, err := sonarrClient(inst).SeriesAPI.ListSeries(ctx).Execute()
+	if err != nil {
+		return nil
+	}
+	out := make([]seerrItem, 0, len(series))
+	for i := range series {
+		s := &series[i]
+		tmdb := int(s.GetTmdbId())
+		if tmdb == 0 {
+			continue // detail view is tmdb-keyed
+		}
+		rat := s.GetRatings()
+		out = append(out, seerrItem{
+			MediaType: "tv", TmdbID: tmdb, Title: s.GetTitle(), Year: yearStr(s.GetYear()),
+			Poster: sonarrPoster(s.GetImages()), Overview: s.GetOverview(),
+			Vote: rat.GetValue(), Status: seriesStatus(s),
+		})
+	}
+	return out
+}
+
+// radarrLibItems is the Radarr counterpart (movies are 5 = available when they have a file).
+func radarrLibItems(inst arrInstance) []seerrItem {
+	ctx, cancel := arrCtx()
+	defer cancel()
+	movies, _, err := radarrClient(inst).MovieAPI.ListMovie(ctx).Execute()
+	if err != nil {
+		return nil
+	}
+	out := make([]seerrItem, 0, len(movies))
+	for i := range movies {
+		m := &movies[i]
+		tmdb := int(m.GetTmdbId())
+		if tmdb == 0 {
+			continue
+		}
+		st := 3
+		if m.GetHasFile() {
+			st = 5
+		}
+		vote := 0.0
+		if r := m.GetRatings(); r.Tmdb != nil {
+			tc := r.GetTmdb()
+			vote = tc.GetValue()
+		}
+		out = append(out, seerrItem{
+			MediaType: "movie", TmdbID: tmdb, Title: m.GetTitle(), Year: yearStr(m.GetYear()),
+			Poster: radarrPoster(m.GetImages()), Overview: m.GetOverview(),
+			Vote: vote, Status: st,
+		})
+	}
+	return out
+}
+
+// sonarrSeasonStatus finds the matching series in any Sonarr instance and returns a
+// per-season availability map (seasonNumber -> 0 missing · 4 partial · 5 complete)
+// plus the overall series status. (nil, 0) when the series isn't in any Sonarr.
+func sonarrSeasonStatus(tvdbID, tmdbID int) (map[int]int, int) {
+	for _, inst := range arrInstancesCached() {
+		if inst.Kind != "sonarr" {
+			continue
+		}
+		ctx, cancel := arrCtx()
+		r := sonarrClient(inst).SeriesAPI.ListSeries(ctx)
+		if tvdbID > 0 {
+			r = r.TvdbId(int32(tvdbID))
+		}
+		series, _, err := r.Execute()
+		cancel()
+		if err != nil {
+			continue
+		}
+		for i := range series {
+			if !(tvdbID > 0 && int(series[i].GetTvdbId()) == tvdbID) && !(tmdbID > 0 && int(series[i].GetTmdbId()) == tmdbID) {
+				continue
+			}
+			m := map[int]int{}
+			for _, sn := range series[i].GetSeasons() {
+				st := 0
+				if stat, ok := sn.GetStatisticsOk(); ok && stat != nil {
+					fc := stat.GetEpisodeFileCount()
+					ec := stat.GetEpisodeCount()
+					switch {
+					case fc <= 0:
+						st = 0
+					case ec > 0 && fc >= ec:
+						st = 5
+					default:
+						st = 4
+					}
+				}
+				m[int(sn.GetSeasonNumber())] = st
+			}
+			return m, seriesStatus(&series[i])
+		}
+	}
+	return nil, 0
 }
 
 func applySonarrFile(a *arrFile, f sonarr.EpisodeFileResource) {

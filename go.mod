@@ -7,6 +7,7 @@ require (
 	github.com/coder/websocket v1.8.14
 	github.com/devopsarr/prowlarr-go v1.2.1
 	github.com/devopsarr/radarr-go v1.2.1
+	github.com/devopsarr/seerr-go v0.2.0
 	github.com/devopsarr/sonarr-go v1.1.1
 	github.com/devopsarr/whisparr-go v1.1.1
 	github.com/go-chi/chi/v5 v5.3.0
@@ -20,4 +21,5 @@ require (
 require (
 	github.com/kr/fs v0.1.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
+	gopkg.in/validator.v2 v2.0.1 // indirect
 )
