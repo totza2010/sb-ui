@@ -5,7 +5,9 @@ package rclone
 
 import (
 	"context"
+	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +60,50 @@ func Remotes(confPath string) (map[string]map[string]string, string) {
 		}
 	}
 	return out, confPath
+}
+
+var badField = regexp.MustCompile(`[\r\n]`)
+
+// SaveRemotes writes name → {key: val} back to rclone.conf as INI, sorted for a
+// stable file, then tightens perms (the file holds tokens / obscured secrets).
+// Note: comments and original ordering are not preserved.
+func SaveRemotes(confPath string, remotes map[string]map[string]string) error {
+	names := make([]string, 0, len(remotes))
+	for n := range remotes {
+		if n == "" || strings.ContainsAny(n, "[]\r\n") {
+			return fmt.Errorf("invalid remote name %q", n)
+		}
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	for i, n := range names {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "[%s]\n", n)
+		keys := make([]string, 0, len(remotes[n]))
+		for k := range remotes[n] {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := remotes[n][k]
+			if badField.MatchString(k) || badField.MatchString(v) {
+				return fmt.Errorf("invalid characters in %s.%s", n, k)
+			}
+			fmt.Fprintf(&b, "%s = %s\n", k, v)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := executor.Get().WriteFile(ctx, confPath, b.String()); err != nil {
+		return err
+	}
+	run("chmod", "600", confPath) // best-effort: keep secrets owner-only
+	return nil
 }
 
 // ── status ───────────────────────────────────────────────────────────────────

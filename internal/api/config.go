@@ -113,6 +113,20 @@ func rcloneRemotes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "remotes": remotes})
 }
 
+func rcloneRemotesSave(w http.ResponseWriter, req *http.Request) {
+	var remotes map[string]map[string]string
+	if err := json.NewDecoder(req.Body).Decode(&remotes); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	path := rcloneConfPath()
+	if err := rclone.SaveRemotes(path, remotes); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "path": path})
+}
+
 func rcloneStatus(w http.ResponseWriter, _ *http.Request) {
 	remotes, _ := rclone.Remotes(rcloneConfPath())
 	names := make([]string, 0, len(remotes))

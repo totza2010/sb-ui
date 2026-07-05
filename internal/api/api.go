@@ -78,6 +78,7 @@ func Mount(r chi.Router) {
 
 	// rclone
 	r.Get("/api/rclone/remotes", rcloneRemotes)
+	r.Put("/api/rclone/remotes", rcloneRemotesSave)
 	r.Get("/api/rclone/ls", rcloneLs)
 	r.Post("/api/rclone/mkdir", rcloneMkdir)
 	r.Get("/api/rclone/fsinfo", rcloneFsinfo)
