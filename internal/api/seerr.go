@@ -6,12 +6,136 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"sb-ui/internal/inventory"
+	"sb-ui/internal/store"
+
 	"github.com/devopsarr/seerr-go/seerr"
 )
+
+const seerrInstancesRel = "cache/seerr_instances.json"
+
+// seerrInstances returns the user-configured Seerr instances, migrating the legacy
+// single options.Seerr entry into the list on first use.
+func seerrInstances() []seerrConfig {
+	var list []seerrConfig
+	store.ReadJSON(seerrInstancesRel, &list)
+	if len(list) == 0 {
+		if s := loadOptions().Seerr; s.URL != "" {
+			if s.Name == "" {
+				s.Name = containerNameFor(s.URL, "jellyseerr", "overseerr", "seerr")
+			}
+			list = []seerrConfig{s}
+		}
+	}
+	return list
+}
+
+// discoverSeerrApps finds every Jellyseerr/Overseerr/Seerr container from the inventory,
+// with its public URL (Traefik host / tsdproxy label) — the API key must be supplied.
+func discoverSeerrApps() []seerrConfig {
+	out := []seerrConfig{}
+	seen := map[string]bool{}
+	for _, tag := range []string{"jellyseerr", "overseerr", "seerr"} {
+		for _, ap := range inventory.ResolveAppdata(tag) {
+			if ap.Instance == "" || seen[ap.Instance] {
+				continue
+			}
+			seen[ap.Instance] = true
+			url := ""
+			if h := containerWebHost(ap.Instance); h != "" {
+				url = "https://" + h
+			} else if u := containerTsdURL(ap.Instance); u != "" {
+				url = u
+			}
+			out = append(out, seerrConfig{Name: ap.Instance, URL: url})
+		}
+	}
+	return out
+}
+
+// mergedSeerrInstances unions discovered containers with configured entries, so the UI
+// shows every detected instance (each awaiting an API key) plus any manual ones.
+func mergedSeerrInstances() []seerrConfig {
+	cfg := map[string]seerrConfig{}
+	for _, s := range seerrInstances() {
+		cfg[s.Name] = s
+	}
+	out := []seerrConfig{}
+	seen := map[string]bool{}
+	for _, d := range discoverSeerrApps() {
+		c := cfg[d.Name]
+		url := d.URL // prefer the live-detected URL (like the *arr apps); fall back to saved
+		if url == "" {
+			url = c.URL
+		}
+		inst := seerrConfig{Name: d.Name, URL: url, APIKey: c.APIKey, Default: c.Default}
+		if inst.URL == "" && inst.APIKey == "" {
+			continue // discovered role that isn't actually deployed / configured — skip
+		}
+		out = append(out, inst)
+		seen[d.Name] = true
+	}
+	for _, s := range seerrInstances() {
+		if !seen[s.Name] && (s.URL != "" || s.APIKey != "") {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// primarySeerr is the instance used for Discover requests: the first fully-configured
+// one, else any with a URL, else the legacy single config.
+func primarySeerr() seerrConfig {
+	list := seerrInstances()
+	for _, s := range list { // the explicitly-chosen default wins
+		if s.Default && s.URL != "" && s.APIKey != "" {
+			return s
+		}
+	}
+	for _, s := range list {
+		if s.URL != "" && s.APIKey != "" {
+			return s
+		}
+	}
+	for _, s := range list {
+		if s.URL != "" {
+			return s
+		}
+	}
+	return loadOptions().Seerr
+}
+
+// seerrInstancesList (GET) returns discovered+configured instances for the config UI.
+func seerrInstancesList(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"instances": mergedSeerrInstances()})
+}
+
+// seerrInstancesSave (PUT) persists the edited instance list.
+func seerrInstancesSave(w http.ResponseWriter, req *http.Request) {
+	var b struct {
+		Instances []seerrConfig `json:"instances"`
+	}
+	if json.NewDecoder(req.Body).Decode(&b) != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	out := make([]seerrConfig, 0, len(b.Instances))
+	for _, s := range b.Instances {
+		s.Name, s.URL, s.APIKey = strings.TrimSpace(s.Name), strings.TrimRight(strings.TrimSpace(s.URL), "/"), strings.TrimSpace(s.APIKey)
+		if s.Name == "" && s.URL == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	store.WriteJSON(seerrInstancesRel, out)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
 
 // Seerr (Jellyseerr/Overseerr): discover titles not yet in the library and request
 // them. Seerr already syncs with the *arr apps + Plex, so each discover result carries
@@ -484,7 +608,7 @@ func (s reqServer) withDetail(cfg seerrConfig, kind string) reqServer {
 // offer the same choices Seerr does. Everything is fetched raw to dodge the
 // generated client's lossy/over-strict models.
 func requestOptions(w http.ResponseWriter, req *http.Request) {
-	cfg := loadOptions().Seerr
+	cfg := primarySeerr()
 	if cfg.URL == "" {
 		http.Error(w, "Seerr not configured", http.StatusBadRequest)
 		return
@@ -544,7 +668,7 @@ func seerrUsers(cfg seerrConfig) []reqUser {
 // seerrRequest submits a request to Seerr (which routes it to the right *arr),
 // honouring the dialog's server / profile / root-folder / season choices.
 func seerrRequest(w http.ResponseWriter, req *http.Request) {
-	cfg := loadOptions().Seerr
+	cfg := primarySeerr()
 	if cfg.URL == "" {
 		http.Error(w, "Seerr not configured", http.StatusBadRequest)
 		return

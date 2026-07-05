@@ -177,6 +177,58 @@ func seriesStatus(s *sonarr.SeriesResource) int {
 	}
 }
 
+// arrSetImportsEnabled toggles each Sonarr/Radarr's "Completed Download Handling"
+// (auto-import). Turning it off stops *arr from importing finished downloads into the
+// media root while an upload is moving that root — without disabling the download
+// clients (so grabbing/downloading carries on). enabled=false blocks imports.
+func arrSetImportsEnabled(enabled bool) {
+	for _, inst := range arrInstancesCached() {
+		ctx, cancel := arrCtx()
+		switch inst.Kind {
+		case "sonarr":
+			cl := sonarrClient(inst)
+			if cfg, _, err := cl.DownloadClientConfigAPI.GetDownloadClientConfig(ctx).Execute(); err == nil && cfg.GetEnableCompletedDownloadHandling() != enabled {
+				cfg.SetEnableCompletedDownloadHandling(enabled)
+				_, _, _ = cl.DownloadClientConfigAPI.UpdateDownloadClientConfig(ctx, strconv.Itoa(int(cfg.GetId()))).DownloadClientConfigResource(*cfg).Execute()
+			}
+		case "radarr":
+			cl := radarrClient(inst)
+			if cfg, _, err := cl.DownloadClientConfigAPI.GetDownloadClientConfig(ctx).Execute(); err == nil && cfg.GetEnableCompletedDownloadHandling() != enabled {
+				cfg.SetEnableCompletedDownloadHandling(enabled)
+				_, _, _ = cl.DownloadClientConfigAPI.UpdateDownloadClientConfig(ctx, strconv.Itoa(int(cfg.GetId()))).DownloadClientConfigResource(*cfg).Execute()
+			}
+		}
+		cancel()
+	}
+}
+
+// arrImportsStatus reads back how many *arr instances currently have auto-import
+// (Completed Download Handling) turned off — for the block self-test.
+func arrImportsStatus() (blocked, total int) {
+	for _, inst := range arrInstancesCached() {
+		ctx, cancel := arrCtx()
+		var cfg interface{ GetEnableCompletedDownloadHandling() bool }
+		switch inst.Kind {
+		case "sonarr":
+			if c, _, err := sonarrClient(inst).DownloadClientConfigAPI.GetDownloadClientConfig(ctx).Execute(); err == nil {
+				cfg = c
+			}
+		case "radarr":
+			if c, _, err := radarrClient(inst).DownloadClientConfigAPI.GetDownloadClientConfig(ctx).Execute(); err == nil {
+				cfg = c
+			}
+		}
+		cancel()
+		if cfg != nil {
+			total++
+			if !cfg.GetEnableCompletedDownloadHandling() {
+				blocked++
+			}
+		}
+	}
+	return
+}
+
 // yearStr renders a non-zero year as a 4-digit string ("" for 0).
 func yearStr(y int32) string {
 	if y <= 0 {

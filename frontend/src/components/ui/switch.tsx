@@ -1,26 +1,30 @@
-import { cn } from '@/lib/cn'
+"use client";
 
-/** Switch — controlled toggle (no extra deps). */
-export function Switch({ checked, onCheckedChange, disabled, className }: {
-  checked: boolean
-  onCheckedChange: (v: boolean) => void
-  disabled?: boolean
-  className?: string
-}) {
+import { Switch as SwitchPrimitive } from "radix-ui";
+import type * as React from "react";
+import { cn } from "@/lib/utils";
+
+function Switch({
+  className,
+  ...props
+}: React.ComponentProps<typeof SwitchPrimitive.Root>) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onCheckedChange(!checked)}
+    <SwitchPrimitive.Root
       className={cn(
-        'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed',
-        checked ? 'bg-primary' : 'bg-muted-foreground/30',
-        className
+        "peer inline-flex h-6 w-10 shrink-0 items-center rounded-full border-2 border-transparent outline-none transition-all focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=unchecked]:bg-input",
+        className,
       )}
+      data-slot="switch"
+      {...props}
     >
-      <span className={cn('inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform', checked ? 'translate-x-[18px]' : 'translate-x-0.5')} />
-    </button>
-  )
+      <SwitchPrimitive.Thumb
+        className={cn(
+          "pointer-events-none block size-5 rounded-full bg-background shadow-xs ring-0 transition-transform data-[state=checked]:translate-x-4 data-[state=unchecked]:translate-x-0 data-[state=checked]:rtl:-translate-x-4",
+        )}
+        data-slot="switch-thumb"
+      />
+    </SwitchPrimitive.Root>
+  );
 }
+
+export { Switch };

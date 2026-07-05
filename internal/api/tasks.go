@@ -181,6 +181,20 @@ func findTask(id string) (Task, bool) {
 	return Task{}, false
 }
 
+// findTaskByName looks a task up by display name (used to recover uploader destinations
+// whose remote name was mistakenly stored as the old task label).
+func findTaskByName(name string) (Task, bool) {
+	ensureTasks()
+	taskMu.Lock()
+	defer taskMu.Unlock()
+	for _, t := range tasks {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return Task{}, false
+}
+
 // runTaskNow runs a task immediately (concurrent).
 func runTaskNow(w http.ResponseWriter, req *http.Request) {
 	t, ok := findTask(chi.URLParam(req, "id"))

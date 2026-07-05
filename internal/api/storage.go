@@ -15,11 +15,12 @@ import (
 // remoteInfo is one rclone remote (with its backend type) checked directly via
 // `rclone about`.
 type remoteInfo struct {
-	Name  string `json:"name"`
-	Type  string `json:"type"`
-	OK    bool   `json:"ok"`
-	Used  string `json:"used,omitempty"`
-	Total string `json:"total,omitempty"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	OK        bool   `json:"ok"`
+	Used      string `json:"used,omitempty"`
+	Total     string `json:"total,omitempty"`
+	UsedBytes int64  `json:"-"` // raw used, for the uploader's capacity-balancing
 }
 
 type storageResp struct {
@@ -83,6 +84,7 @@ func cloudRemotes(ctx context.Context) []remoteInfo {
 				if json.Unmarshal([]byte(p[3]), &a) == nil {
 					if a.Used > 0 {
 						r.Used = humanBytes(a.Used)
+						r.UsedBytes = a.Used
 					}
 					if a.Total > 0 {
 						r.Total = humanBytes(a.Total)
@@ -97,6 +99,18 @@ func cloudRemotes(ctx context.Context) []remoteInfo {
 	remotesCache, remotesCached = list, time.Now()
 	remotesMu.Unlock()
 	return list
+}
+
+// remoteUsedBytes maps each rclone remote to its total used bytes (via the cached
+// `rclone about`) — the ranking input for the uploader's capacity-balancing.
+func remoteUsedBytes(ctx context.Context) map[string]int64 {
+	m := map[string]int64{}
+	for _, r := range cloudRemotes(ctx) {
+		if r.UsedBytes > 0 {
+			m[r.Name] = r.UsedBytes
+		}
+	}
+	return m
 }
 
 // localDisk probes /mnt/local (the external HDD) directly: liveness + df.

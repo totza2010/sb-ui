@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	plexgo "github.com/LukeHagar/plexgo"
@@ -293,4 +294,106 @@ func plexShowEpisodeBasenames(tvdb string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// ── transcode limiting (uploader: free CPU/disk for the upload) ──────────────────
+
+// plexKillTranscodes terminates every active *transcoding* session (direct-play
+// streams are left alone), returning how many it stopped.
+func plexKillTranscodes(cfg plexConfig) int {
+	if cfg.URL == "" {
+		return 0
+	}
+	var r struct {
+		MediaContainer struct {
+			Metadata []struct {
+				Session struct {
+					ID string `json:"id"`
+				} `json:"Session"`
+				TranscodeSession *struct {
+					VideoDecision string `json:"videoDecision"`
+					AudioDecision string `json:"audioDecision"`
+				} `json:"TranscodeSession"`
+			} `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	if plexRawJSON(cfg, "/status/sessions", &r) != nil {
+		return 0
+	}
+	killed := 0
+	for _, m := range r.MediaContainer.Metadata {
+		if m.TranscodeSession == nil || m.Session.ID == "" {
+			continue // direct play (no transcode) → leave it alone
+		}
+		if m.TranscodeSession.VideoDecision != "transcode" && m.TranscodeSession.AudioDecision != "transcode" {
+			continue // direct stream (copy) → not a real transcode
+		}
+		_, _ = plexRawGET(cfg, "/status/sessions/terminate?sessionId="+url.QueryEscape(m.Session.ID)+
+			"&reason="+url.QueryEscape("Server is uploading — transcoding paused, please retry shortly"))
+		killed++
+	}
+	return killed
+}
+
+// plexTranscodeCount counts active transcoding sessions (for the block self-test).
+func plexTranscodeCount(cfg plexConfig) int {
+	if cfg.URL == "" {
+		return 0
+	}
+	var r struct {
+		MediaContainer struct {
+			Metadata []struct {
+				TranscodeSession *struct {
+					VideoDecision string `json:"videoDecision"`
+					AudioDecision string `json:"audioDecision"`
+				} `json:"TranscodeSession"`
+			} `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	if plexRawJSON(cfg, "/status/sessions", &r) != nil {
+		return 0
+	}
+	n := 0
+	for _, m := range r.MediaContainer.Metadata {
+		if m.TranscodeSession != nil && (m.TranscodeSession.VideoDecision == "transcode" || m.TranscodeSession.AudioDecision == "transcode") {
+			n++
+		}
+	}
+	return n
+}
+
+// A background killer keeps terminating transcodes for the whole upload (new ones can
+// start mid-run), started on apply and stopped on restore.
+var (
+	plexKillMu   sync.Mutex
+	plexKillStop chan struct{}
+)
+
+func startPlexTranscodeKill(cfg plexConfig) {
+	plexKillMu.Lock()
+	defer plexKillMu.Unlock()
+	if plexKillStop != nil {
+		return // already running
+	}
+	stop := make(chan struct{})
+	plexKillStop = stop
+	go func() {
+		for {
+			plexKillTranscodes(cfg)
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Second):
+			}
+		}
+	}()
+}
+
+func stopPlexTranscodeKill() {
+	plexKillMu.Lock()
+	defer plexKillMu.Unlock()
+	if plexKillStop != nil {
+		close(plexKillStop)
+		plexKillStop = nil
+	}
 }

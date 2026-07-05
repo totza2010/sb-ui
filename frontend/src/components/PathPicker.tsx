@@ -25,15 +25,24 @@ const DISK = [
   { base: '/opt', label: 'Apps', icon: Package },
 ] as const
 
-export function PathPicker({ mode, onPick, onClose }: {
+export function PathPicker({ mode, onPick, onClose, disks, hideRclone, relative }: {
   mode: 'multi' | 'folder'
   onPick: (items: PickItem[]) => void
   onClose: () => void
+  // disks: allowlist of disk-zone bases to show in the sidebar (e.g. ['/mnt/unionfs']
+  // to show only Merged). undefined = show all.
+  disks?: readonly string[]
+  // hideRclone: hide the rclone remotes group from the sidebar.
+  hideRclone?: boolean
+  // relative: return the path relative to the base (e.g. "Media/TV") instead of an
+  // absolute endpoint — for subpaths applied on each remote.
+  relative?: boolean
 }) {
   const { data: conf } = useRcloneRemotes()
-  const remotes = useMemo(() => Object.keys(conf?.remotes ?? {}), [conf])
+  const remotes = useMemo(() => (hideRclone ? [] : Object.keys(conf?.remotes ?? {})), [conf, hideRclone])
+  const disksShown = useMemo(() => DISK.filter((d) => !disks || disks.includes(d.base)), [disks])
 
-  const [source, setSource] = useState<Source>({ kind: 'disk', base: DISK[0].base, label: DISK[0].label })
+  const [source, setSource] = useState<Source>({ kind: 'disk', base: (disksShown[0] ?? DISK[0]).base, label: (disksShown[0] ?? DISK[0]).label })
   const [filesMap, setFilesMap] = useState<Record<string, CFile>>({})
   const [path, setPath] = useState('')
   const [loading, setLoading] = useState(false)
@@ -77,34 +86,43 @@ export function PathPicker({ mode, onPick, onClose }: {
     } catch { setErr('mkdir failed') }
   }
 
+  const rel = (p: string) => p.replace(/^\//, '')
+  // Folder mode: use the single-clicked folder if one is selected, otherwise the
+  // folder you're currently browsing (path). So a single click picks that folder —
+  // no need to navigate into it first.
+  const folderTarget = mode === 'folder' && sel.length === 1 && sel[0].isDirectory ? sel[0].path : path
   function confirm() {
-    if (mode === 'folder') onPick([{ path: endpoint(path), is_dir: true }])
-    else onPick(sel.map((f) => ({ path: endpoint(f.path), is_dir: f.isDirectory })))
+    if (mode === 'folder') onPick([{ path: relative ? rel(folderTarget) : endpoint(folderTarget), is_dir: true }])
+    else onPick(sel.map((f) => ({ path: relative ? rel(f.path) : endpoint(f.path), is_dir: f.isDirectory })))
   }
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="w-[94vw] max-w-[1200px]">
-        <DialogHeader><DialogTitle>{mode === 'folder' ? 'Choose destination folder' : 'Choose source files / folders'}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{relative ? 'Choose subpath (merged folder)' : mode === 'folder' ? 'Choose destination folder' : 'Choose source files / folders'}</DialogTitle></DialogHeader>
 
         <div className="flex gap-4">
+          {(disksShown.length > 1 || !hideRclone) && (
           <aside className="w-40 shrink-0 space-y-3">
             <Grp title="Disk">
-              {DISK.map(({ base, label, icon: Icon }) => (
+              {disksShown.map(({ base, label, icon: Icon }) => (
                 <Rail key={base} active={source.kind === 'disk' && source.base === base} onClick={() => setSource({ kind: 'disk', base, label })}>
                   <Icon className="h-3.5 w-3.5 shrink-0" />{label}
                 </Rail>
               ))}
             </Grp>
-            <Grp title="rclone">
-              {remotes.length === 0 && <p className="px-2 text-[11px] text-muted-foreground/60">No remotes</p>}
-              {remotes.map((r) => (
-                <Rail key={r} active={source.kind === 'rclone' && source.remote === r} onClick={() => setSource({ kind: 'rclone', remote: r })}>
-                  <Cloud className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{r}</span>
-                </Rail>
-              ))}
-            </Grp>
+            {!hideRclone && (
+              <Grp title="rclone">
+                {remotes.length === 0 && <p className="px-2 text-[11px] text-muted-foreground/60">No remotes</p>}
+                {remotes.map((r) => (
+                  <Rail key={r} active={source.kind === 'rclone' && source.remote === r} onClick={() => setSource({ kind: 'rclone', remote: r })}>
+                    <Cloud className="h-3.5 w-3.5 shrink-0" /><span className="truncate">{r}</span>
+                  </Rail>
+                ))}
+              </Grp>
+            )}
           </aside>
+          )}
 
           <div className="flex-1 min-w-0">
             {err && <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-destructive break-all">{err}</div>}
@@ -124,11 +142,11 @@ export function PathPicker({ mode, onPick, onClose }: {
         </div>
 
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] text-muted-foreground font-mono truncate">{endpoint(path)}</span>
+          <span className="text-[11px] text-muted-foreground font-mono truncate">{relative ? (rel(folderTarget) || '(root)') : endpoint(mode === 'folder' ? folderTarget : path)}</span>
           <div className="flex gap-2 shrink-0">
             <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
             {mode === 'folder'
-              ? <Button size="sm" onClick={confirm}>Use this folder</Button>
+              ? <Button size="sm" onClick={confirm}>{relative ? 'Use this subpath' : 'Use this folder'}</Button>
               : <Button size="sm" onClick={confirm} disabled={sel.length === 0}>Add selected ({sel.length})</Button>}
           </div>
         </div>

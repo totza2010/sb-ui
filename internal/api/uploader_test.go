@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,5 +253,342 @@ func TestUploaderBelowThreshold(t *testing.T) {
 	uploaderCheck()
 	if len(*calls) != 0 {
 		t.Fatalf("expected no upload below threshold, got %v", remoteSeq(*calls))
+	}
+}
+
+// 8. Capacity-balancing: least-used first, never the same remote twice in a row, and
+// periodic relief uploads that reach the fuller accounts.
+func TestUploaderBalance(t *testing.T) {
+	remotes := []uploaderRemote{{Name: "A"}, {Name: "B"}, {Name: "C"}, {Name: "D"}}
+	used := map[string]int64{"A": 20, "B": 33, "C": 137, "D": 199} // A/B emptiest
+	led := map[string]*ledgerRemote{}
+	rr := 0
+	var bstate balanceState
+	pc := pickCtx{balance: balanceConfig{Enabled: true, MaxStreak: 3, NoRepeat: true}, bstate: &bstate, used: used, rr: &rr}
+
+	now := time.Now()
+	var seq []string
+	for i := 0; i < 16; i++ {
+		r, _, reason := selectRemote(remotes, led, pc, now)
+		if r == nil {
+			t.Fatalf("no remote picked: %s", reason)
+		}
+		seq = append(seq, r.Name)
+		used[r.Name] += 10
+		ledgerAdd(led, remoteKey(*r), 10, 1, now)
+		now = now.Add(time.Minute)
+	}
+
+	for i := 1; i < len(seq); i++ {
+		if seq[i] == seq[i-1] {
+			t.Fatalf("consecutive repeat at cycle %d: %v", i, seq)
+		}
+	}
+	counts := map[string]int{}
+	for _, s := range seq {
+		counts[s]++
+	}
+	if counts["C"] == 0 || counts["D"] == 0 {
+		t.Fatalf("relief never reached the fuller accounts C/D: %v (%v)", counts, seq)
+	}
+	if counts["A"] < counts["C"] || counts["A"] < counts["D"] {
+		t.Fatalf("emptiest account A should dominate: %v (%v)", counts, seq)
+	}
+}
+
+// 9. Block orchestration: the pause actions must run before the upload and the restore
+// actions after it, and only when their toggle is on.
+func TestUploaderBlockOrchestration(t *testing.T) {
+	op, or, oa := qbitPauseFn, qbitResumeFn, arrImportsFn
+	defer func() { qbitPauseFn, qbitResumeFn, arrImportsFn = op, or, oa }()
+	var seq []string
+	qbitPauseFn = func(qbitConfig) error { seq = append(seq, "qbit:pause"); return nil }
+	qbitResumeFn = func(qbitConfig) error { seq = append(seq, "qbit:resume"); return nil }
+	arrImportsFn = func(en bool) {
+		if en {
+			seq = append(seq, "arr:on")
+		} else {
+			seq = append(seq, "arr:off")
+		}
+	}
+
+	cfg := uploaderConfig{
+		Enabled: true, Source: "/src", Threshold: "1G",
+		Remotes: []uploaderRemote{{Name: "A"}},
+		Pause:   pauseConfig{ArrDisable: true, Qbit: qbitConfig{Enabled: true}},
+	}
+	uploadSim(t, cfg, 10*gb, gb, 1, "")
+	uploadRunner = func(_, _, _ string, _ []transferItem, _ string, _ transferOpts) (int64, int, bool) {
+		seq = append(seq, "upload")
+		return gb, 1, false
+	}
+	uploaderCheck()
+
+	want := []string{"qbit:pause", "arr:off", "upload", "qbit:resume", "arr:on"}
+	if len(seq) != len(want) {
+		t.Fatalf("block sequence = %v, want %v", seq, want)
+	}
+	for i := range want {
+		if seq[i] != want[i] {
+			t.Fatalf("block sequence = %v, want %v", seq, want)
+		}
+	}
+}
+
+// 10. With every block toggle off, no external service is touched.
+func TestUploaderBlockDisabled(t *testing.T) {
+	op, or, oa := qbitPauseFn, qbitResumeFn, arrImportsFn
+	defer func() { qbitPauseFn, qbitResumeFn, arrImportsFn = op, or, oa }()
+	touched := false
+	qbitPauseFn = func(qbitConfig) error { touched = true; return nil }
+	qbitResumeFn = func(qbitConfig) error { touched = true; return nil }
+	arrImportsFn = func(bool) { touched = true }
+
+	cfg := uploaderConfig{
+		Enabled: true, Source: "/src", Threshold: "1G",
+		Remotes: []uploaderRemote{{Name: "A"}},
+		Pause:   pauseConfig{},
+	}
+	uploadSim(t, cfg, 10*gb, gb, 1, "")
+	uploaderCheck()
+	if touched {
+		t.Fatalf("block actions ran while every toggle was off")
+	}
+}
+
+// 11. Even on a rate-limit (flood) mid-upload, the restore actions still run — the
+// external services must never be left paused.
+func TestUploaderBlockRestoresOnFlood(t *testing.T) {
+	op, or, oa := qbitPauseFn, qbitResumeFn, arrImportsFn
+	defer func() { qbitPauseFn, qbitResumeFn, arrImportsFn = op, or, oa }()
+	var seq []string
+	qbitPauseFn = func(qbitConfig) error { return nil }
+	qbitResumeFn = func(qbitConfig) error { seq = append(seq, "qbit:resume"); return nil }
+	arrImportsFn = func(en bool) {
+		if en {
+			seq = append(seq, "arr:on")
+		}
+	}
+
+	cfg := uploaderConfig{
+		Enabled: true, Source: "/src", Threshold: "1G",
+		Remotes: []uploaderRemote{{Name: "A"}},
+		Pause:   pauseConfig{ArrDisable: true, Qbit: qbitConfig{Enabled: true}},
+	}
+	uploadSim(t, cfg, 10*gb, gb, 1, "A")
+	uploaderCheck()
+	if len(seq) != 2 || seq[0] != "qbit:resume" || seq[1] != "arr:on" {
+		t.Fatalf("restore did not run after flood: %v", seq)
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// Full-system coverage: pure helpers, eligibility/selection, timing, and an end-to-end
+// simulator drain (how many files/bytes, which remote when, how long it waits).
+// ════════════════════════════════════════════════════════════════════════════════
+
+func TestParseCapBytes(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"", 0},               // unlimited
+		{"700", 700 * gb},     // bare number = GB
+		{"700G", 700 * gb},    // explicit GB
+		{"2T", 2 * 1024 * gb}, // unit-suffixed as-is
+		{"500M", int64(parseSize("500M"))},
+	}
+	for _, c := range cases {
+		if got := parseCapBytes(c.in); got != c.want {
+			t.Errorf("parseCapBytes(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestInWindow(t *testing.T) {
+	at := func(h, m int) time.Time { return time.Date(2026, 1, 2, h, m, 0, 0, time.UTC) }
+	if !inWindow("", "", at(3, 0)) {
+		t.Error("empty window should always be in-window")
+	}
+	if !inWindow("01:00", "05:00", at(3, 0)) || inWindow("01:00", "05:00", at(6, 0)) {
+		t.Error("daytime window 01-05 wrong")
+	}
+	if !inWindow("22:00", "06:00", at(23, 0)) || !inWindow("22:00", "06:00", at(2, 0)) {
+		t.Error("overnight window should include 23:00 and 02:00")
+	}
+	if inWindow("22:00", "06:00", at(12, 0)) {
+		t.Error("overnight window should exclude noon")
+	}
+}
+
+func TestNextWindowOpen(t *testing.T) {
+	loc := time.UTC
+	now := time.Date(2026, 1, 2, 8, 0, 0, 0, loc)
+	if open := nextWindowOpen("22:00", "23:59", now); open.Hour() != 22 || open.Day() != 2 {
+		t.Fatalf("nextWindowOpen before window = %v, want today 22:00", open)
+	}
+	if got := nextWindowOpen("06:00", "23:00", now); !got.Equal(now) {
+		t.Fatalf("nextWindowOpen inside window = %v, want now", got)
+	}
+	late := time.Date(2026, 1, 2, 23, 30, 0, 0, loc)
+	if got := nextWindowOpen("22:00", "23:00", late); got.Day() != 3 || got.Hour() != 22 {
+		t.Fatalf("nextWindowOpen after window = %v, want tomorrow 22:00", got)
+	}
+}
+
+func TestLedgerWindowing(t *testing.T) {
+	led := map[string]*ledgerRemote{}
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	ledgerAdd(led, "A", 100*gb, 10, now.Add(-30*time.Hour)) // outside 24h → pruned
+	ledgerAdd(led, "A", 200*gb, 20, now.Add(-2*time.Hour))
+	ledgerAdd(led, "A", 50*gb, 5, now)
+	if b := usedInWindow(led, "A", now); b != 250*gb {
+		t.Errorf("usedInWindow = %d, want %d (old event pruned)", b, 250*gb)
+	}
+	if f := usedFilesInWindow(led, "A", now); f != 25 {
+		t.Errorf("usedFilesInWindow = %d, want 25", f)
+	}
+	if !led["A"].LastUpload.Equal(now) {
+		t.Error("LastUpload should be the most recent add")
+	}
+}
+
+func TestSelectMostFree(t *testing.T) {
+	now := time.Now()
+	led := map[string]*ledgerRemote{}
+	ledgerAdd(led, "A", 600*gb, 0, now) // A cap 700 → 100G free
+	ledgerAdd(led, "B", 100*gb, 0, now) // B cap 700 → 600G free
+	remotes := []uploaderRemote{{Name: "A", CapPerDay: "700"}, {Name: "B", CapPerDay: "700"}, {Name: "C"}}
+	rr := 0
+	if r, _, _ := selectRemote(remotes, led, pickCtx{strategy: "most_free", rr: &rr}, now); r == nil || r.Name != "C" {
+		t.Fatalf("most_free should pick the unlimited remote C, got %v", r)
+	}
+	if r2, free, _ := selectRemote(remotes[:2], led, pickCtx{strategy: "most_free", rr: &rr}, now); r2 == nil || r2.Name != "B" || free != 600*gb {
+		t.Fatalf("most_free = %v (free %d), want B with 600G free", r2, free)
+	}
+}
+
+func TestEligibleCands(t *testing.T) {
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	led := map[string]*ledgerRemote{}
+	ledgerAdd(led, "A", gb, 1, now.Add(-5*time.Minute))              // within gap cooldown
+	ledgerAdd(led, "B", 700*gb, 1, now)                              // byte cap hit
+	ledgerAdd(led, "C", gb, 50, now)                                 // file cap hit
+	led["D"] = &ledgerRemote{PausedUntil: now.Add(30 * time.Minute)} // flood-paused
+	remotes := []uploaderRemote{
+		{Name: "A", GapMin: 30},
+		{Name: "B", CapPerDay: "700"},
+		{Name: "C", CapFiles: 50},
+		{Name: "D"},
+		{Name: "E"},
+	}
+	cands, _ := eligibleCands(remotes, led, now)
+	if len(cands) != 1 || cands[0].r.Name != "E" {
+		names := make([]string, len(cands))
+		for i, c := range cands {
+			names[i] = c.r.Name
+		}
+		t.Fatalf("eligibleCands = %v, want only [E]", names)
+	}
+	if r, _, reason := selectRemote(remotes, led, pickCtx{strategy: "lru", rr: new(int)}, now); r == nil || r.Name != "E" {
+		t.Fatalf("selectRemote = %v (%s), want E", r, reason)
+	}
+}
+
+func TestNextEligible(t *testing.T) {
+	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
+	fresh := uploaderConfig{Remotes: []uploaderRemote{{Name: "A"}}}
+	if got := nextEligible(fresh.Remotes, map[string]*ledgerRemote{}, now); !got.Equal(now) {
+		t.Fatalf("nextEligible fresh = %v, want now", got)
+	}
+	led := map[string]*ledgerRemote{}
+	ledgerAdd(led, "A", 700*gb, 1, now.Add(-10*time.Hour)) // oldest in-window event 10h ago
+	cfg := uploaderConfig{Remotes: []uploaderRemote{{Name: "A", CapPerDay: "700"}}}
+	want := now.Add(-10 * time.Hour).Add(uploaderWindow) // now + 14h
+	if got := nextEligible(cfg.Remotes, led, now); !got.Equal(want) {
+		t.Fatalf("nextEligible capped = %v, want %v (oldest+24h)", got, want)
+	}
+}
+
+func TestSimRate(t *testing.T) {
+	perConn := int64(5 << 20)
+	if rate, src, _ := simRate(uploaderRemote{Name: "A", Bwlimit: "40M"}, nil, nil, perConn); rate != int64(parseSize("40M")) || src != "bwlimit" {
+		t.Fatalf("simRate bwlimit = %d/%s, want 40M", rate, src)
+	}
+	if rate, _, _ := simRate(uploaderRemote{Name: "B"}, nil, nil, perConn); rate != 4*4*perConn {
+		t.Fatalf("simRate default = %d, want %d", rate, 4*4*perConn)
+	}
+	if rate, src, _ := simRate(uploaderRemote{Name: "C"}, nil, map[string]int64{"C": 123 << 20}, perConn); rate != 123<<20 || src != "measured" {
+		t.Fatalf("simRate measured = %d/%s, want 123M measured", rate, src)
+	}
+}
+
+type simStep struct {
+	Kind   string `json:"kind"`
+	Remote string `json:"remote"`
+	Note   string `json:"note"`
+	Files  int    `json:"files"`
+	Bytes  string `json:"bytes"`
+}
+type simResp struct {
+	Steps   []simStep `json:"steps"`
+	Summary []struct {
+		Name  string `json:"name"`
+		Files int    `json:"files"`
+	} `json:"summary"`
+	Total      string `json:"total"`
+	Moved      string `json:"moved"`
+	Done       bool   `json:"done"`
+	ElapsedMin int    `json:"elapsed_min"`
+}
+
+func runSim(t *testing.T, cfg uploaderConfig, total, avg, perConn string) simResp {
+	t.Helper()
+	executor.Set(memExec{})
+	body, _ := json.Marshal(map[string]any{"total": total, "avg_file": avg, "per_conn": perConn, "config": cfg})
+	req := httptest.NewRequest("POST", "/api/uploader/simulate", strings.NewReader(string(body)))
+	w := httptest.NewRecorder()
+	uploaderSimulate(w, req)
+	var out simResp
+	if err := json.NewDecoder(w.Result().Body).Decode(&out); err != nil {
+		t.Fatalf("decode sim response: %v", err)
+	}
+	return out
+}
+
+func TestSimulatorDrainWithCaps(t *testing.T) {
+	cfg := uploaderConfig{
+		Enabled: true, Source: "/src", Threshold: "1G", Strategy: "round_robin",
+		Remotes: []uploaderRemote{{Name: "A", CapPerDay: "700"}, {Name: "B", CapPerDay: "700"}},
+	}
+	out := runSim(t, cfg, "2000G", "5G", "10G")
+
+	if !out.Done {
+		t.Fatalf("drain should finish; done=false (moved %s of %s)", out.Moved, out.Total)
+	}
+	waits, usedA, usedB := 0, false, false
+	for _, s := range out.Steps {
+		switch s.Kind {
+		case "move":
+			if s.Files > 140 {
+				t.Errorf("move exceeded the 700G/140-file cap: %d files (%s)", s.Files, s.Bytes)
+			}
+			usedA = usedA || s.Remote == "A"
+			usedB = usedB || s.Remote == "B"
+		case "wait":
+			waits++
+			if !strings.Contains(s.Note, "cap") {
+				t.Errorf("unexpected wait note: %q", s.Note)
+			}
+		}
+	}
+	if !usedA || !usedB {
+		t.Errorf("both remotes should be used (A=%v B=%v)", usedA, usedB)
+	}
+	if waits == 0 {
+		t.Error("expected a wait step for the daily-cap reset (2000G > 1400G/day)")
+	}
+	if len(out.Steps) == 0 || out.Steps[0].Kind != "move" || out.Steps[0].Files != 140 {
+		t.Errorf("first move should be cap-bounded to 140 files (700G/5G), got %+v", out.Steps)
 	}
 }

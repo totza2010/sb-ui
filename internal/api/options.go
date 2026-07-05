@@ -30,9 +30,13 @@ type pathMapping struct {
 
 // seerrConfig points at a Jellyseerr/Overseerr instance — used ONLY to submit
 // requests (its core job). Discover/detail metadata comes from TMDB directly.
+// Multiple instances (jellyseerr, seerr, …) are stored in cache/seerr_instances.json;
+// this legacy single entry is migrated into that list on first use (see seerr.go).
 type seerrConfig struct {
-	URL    string `json:"url"`     // e.g. https://requests.example.com
-	APIKey string `json:"api_key"` // X-Api-Key
+	Name    string `json:"name,omitempty"`    // container/instance name (multi-instance)
+	URL     string `json:"url"`               // e.g. https://requests.example.com
+	APIKey  string `json:"api_key"`           // X-Api-Key
+	Default bool   `json:"default,omitempty"` // the instance used for Discover requests
 }
 
 // tmdbConfig holds a TMDb v3 API key — the source of all Discover display metadata.
@@ -45,6 +49,7 @@ type optionsConfig struct {
 	PathMappings []pathMapping `json:"path_mappings"`
 	Seerr        seerrConfig   `json:"seerr"`
 	Tmdb         tmdbConfig    `json:"tmdb"`
+	Qbit         qbitConn      `json:"qbit"` // qBittorrent WebUI (used by the uploader's block module)
 }
 
 // mapArrPath rewrites an arr path to the Plex path using the longest matching

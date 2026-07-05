@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"sb-ui/internal/inventory"
 
 	plexgo "github.com/LukeHagar/plexgo"
 )
@@ -37,6 +40,7 @@ type connStatus struct {
 	Error       string     `json:"error,omitempty"`
 	LatencyMS   int64      `json:"latency_ms"`
 	Recommended bool       `json:"recommended,omitempty"`
+	Primary     bool       `json:"primary,omitempty"` // the default instance (e.g. Seerr for requests)
 	Stats       []connStat `json:"stats,omitempty"`      // instance totals (series/episodes/movies)
 	PathStats   []pathStat `json:"path_stats,omitempty"` // per-root-folder breakdown
 }
@@ -198,9 +202,29 @@ func arrGroup(key, label string, defPort string, used bool, insts []arrInstance)
 	return g
 }
 
+// containerNameFor returns the docker container/instance name for a role (via the
+// inventory, same source the *arr cards use), so Plex/Seerr show their container name
+// instead of the Go client name. Falls back to the URL's leading host label.
+func containerNameFor(rawURL string, tags ...string) string {
+	for _, t := range tags {
+		if aps := inventory.ResolveAppdata(t); len(aps) > 0 && aps[0].Instance != "" {
+			return aps[0].Instance
+		}
+	}
+	if u, err := url.Parse(rawURL); err == nil {
+		if h := u.Hostname(); h != "" {
+			if i := strings.Index(h, "."); i > 0 {
+				return h[:i] // seerr.privox.top -> seerr
+			}
+			return h
+		}
+	}
+	return "instance"
+}
+
 // probePlexGo tests the configured Plex via plexgo (LukeHagar) — General.GetIdentity.
 func probePlexGo(cfg plexConfig) connStatus {
-	cs := connStatus{Name: "plexgo (LukeHagar)", BaseURL: cfg.URL}
+	cs := connStatus{Name: containerNameFor(cfg.URL, "plex"), BaseURL: cfg.URL}
 	start := time.Now()
 	s := plexgo.New(plexgo.WithServerURL(cfg.URL), plexgo.WithSecurity(cfg.Token), plexgo.WithClient(arrHTTP))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -255,23 +279,96 @@ func plexGroup(cfg plexConfig) integrationGroup {
 	return g
 }
 
-// seerrGroup reports Jellyseerr/Overseerr connectivity (used for discover + request).
-func seerrGroup(cfg seerrConfig) integrationGroup {
+// seerrGroup reports connectivity for every detected Jellyseerr/Overseerr/Seerr
+// instance. Discovered containers awaiting an API key are shown as unconfigured.
+func seerrGroup() integrationGroup {
 	g := integrationGroup{Key: "seerr", Label: "Jellyseerr / Overseerr", Library: "github.com/devopsarr/seerr-go", Used: true}
-	if cfg.URL == "" {
+	insts := mergedSeerrInstances()
+	if len(insts) == 0 {
 		g.Used = false
-		g.Note = "Not configured — set URL + API key in Settings → Seerr."
+		g.Note = "No Jellyseerr/Overseerr detected — add one, then set its API key here."
 		return g
 	}
 	g.Configured = true
-	cs := connStatus{Name: "seerr-go", BaseURL: cfg.URL}
-	start := time.Now()
-	v, err := seerrStatus(cfg)
-	cs.LatencyMS = time.Since(start).Milliseconds()
-	if err != nil {
-		cs.Error = trimErr(err.Error())
-	} else {
-		cs.OK, cs.Version = true, v
+	primaryName := primarySeerr().Name // the instance Discover requests are sent to
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, in := range insts {
+		wg.Add(1)
+		go func(in seerrConfig) {
+			defer wg.Done()
+			cs := connStatus{Name: in.Name, BaseURL: in.URL, Primary: in.Name != "" && in.Name == primaryName}
+			if in.URL == "" {
+				cs.Error = "needs URL + API key — click the gear to configure"
+			} else if in.APIKey == "" {
+				cs.Error = "URL detected — add its API key (click the gear)"
+			} else {
+				// /status is public (a wrong key still returns 200), so validate against
+				// an authenticated endpoint — /request/count — which also gives us the
+				// program-specific stats to show (requested / awaiting files / available).
+				start := time.Now()
+				var rc struct {
+					Total      int `json:"total"`
+					Pending    int `json:"pending"`
+					Processing int `json:"processing"`
+					Available  int `json:"available"`
+				}
+				err := seerrRawGET(in, "/request/count", &rc)
+				cs.LatencyMS = time.Since(start).Milliseconds()
+				if err != nil {
+					cs.Error = trimErr(err.Error()) // 401 on a bad/missing API key
+				} else {
+					cs.OK = true
+					if v, e := seerrStatus(in); e == nil {
+						cs.Version = v
+					}
+					cs.Stats = []connStat{
+						{Label: "requests", Value: rc.Total},
+						{Label: "pending", Value: rc.Pending},
+						{Label: "processing", Value: rc.Processing},
+						{Label: "available", Value: rc.Available},
+					}
+				}
+			}
+			mu.Lock()
+			g.Instances = append(g.Instances, cs)
+			mu.Unlock()
+		}(in)
+	}
+	wg.Wait()
+	sort.Slice(g.Instances, func(i, j int) bool { // primary first, then by name
+		if g.Instances[i].Primary != g.Instances[j].Primary {
+			return g.Instances[i].Primary
+		}
+		return g.Instances[i].Name < g.Instances[j].Name
+	})
+	return g
+}
+
+// qbitGroup reports qBittorrent connectivity (the uploader's download-client lever).
+func qbitGroup() integrationGroup {
+	g := integrationGroup{Key: "qbit", Label: "qBittorrent", Library: "github.com/autobrr/go-qbittorrent", Used: true}
+	full := resolveQbit(qbitConfig{}) // URL/user/pass from options (+ auto-discover)
+	cs := connStatus{Name: "qbittorrent", BaseURL: full.URL}
+	switch {
+	case full.URL == "":
+		g.Used = false
+		cs.Error = "needs URL + WebUI login — click the gear to configure"
+	case full.User == "":
+		cs.Error = "URL detected — add the WebUI login (click the gear)"
+	default:
+		g.Configured = true
+		start := time.Now()
+		ver, stats, err := qbitProbe(full)
+		cs.LatencyMS = time.Since(start).Milliseconds()
+		if err != nil {
+			cs.Error = trimErr(err.Error())
+		} else {
+			cs.OK, cs.Version, cs.Stats = true, ver, stats
+		}
+	}
+	if full.URL != "" {
+		g.Configured = true
 	}
 	g.Instances = []connStatus{cs}
 	return g
@@ -307,9 +404,10 @@ func integrationsStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	wg.Wait()
 
-	groups = append(groups, seerrGroup(loadOptions().Seerr))
+	groups = append(groups, seerrGroup())
+	groups = append(groups, qbitGroup())
 
-	order := map[string]int{"sonarr": 0, "radarr": 1, "prowlarr": 2, "whisparr": 3, "plex": 4, "seerr": 5}
+	order := map[string]int{"sonarr": 0, "radarr": 1, "prowlarr": 2, "whisparr": 3, "plex": 4, "seerr": 5, "qbit": 6}
 	sort.Slice(groups, func(i, j int) bool { return order[groups[i].Key] < order[groups[j].Key] })
 
 	// Never emit a nil slice (Go marshals nil → JSON null, which breaks .filter/.map).

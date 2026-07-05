@@ -703,7 +703,7 @@ export const useArrLibrary = () =>
 
 export interface ConnStat { label: string; value: number }
 export interface PathStat { path: string; stats: ConnStat[] }
-export interface ConnStatus { name: string; base_url: string; ok: boolean; version?: string; detail?: string; error?: string; latency_ms: number; recommended?: boolean; stats?: ConnStat[]; path_stats?: PathStat[] }
+export interface ConnStatus { name: string; base_url: string; ok: boolean; version?: string; detail?: string; error?: string; latency_ms: number; recommended?: boolean; primary?: boolean; stats?: ConnStat[]; path_stats?: PathStat[] }
 export interface PlexLibInfo { title: string; type: string; count: number; locations?: string[] }
 export interface IntegrationGroup { key: string; label: string; library: string; used: boolean; configured: boolean; note?: string; instances: ConnStatus[]; libraries?: PlexLibInfo[] }
 export const useIntegrations = () =>
@@ -739,7 +739,7 @@ export const useProxySetOpts = () =>
 
 // Central options + Plex
 export interface PathMapping { from: string; to: string }
-export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean }; path_mappings?: PathMapping[]; seerr?: { url: string; api_key: string }; tmdb?: { api_key: string } }
+export interface OptionsConfig { plex: { url: string; token: string; throttle: boolean; max_streams: number; scan_after_upload: boolean }; path_mappings?: PathMapping[]; seerr?: { url: string; api_key: string }; tmdb?: { api_key: string }; qbit?: { url: string; user: string; pass: string } }
 
 // Discover (TMDb) — titles to request (status: 0/1 requestable · 2/3 requested · 4/5 available)
 export interface SeerrItem { media_type: 'movie' | 'tv'; tmdb_id: number; title: string; year: string; poster: string; backdrop?: string; overview: string; vote: number; status: number }
@@ -817,6 +817,14 @@ export const useSaveOptions = () =>
 export const usePlexTest = () =>
   useMutation<{ ok: boolean; streams: number; sections: string[] }, Error, { url: string; token: string } | void>({ mutationFn: (b) => request('/plex/test', { method: 'POST', body: JSON.stringify(b ?? {}) }) })
 
+// Seerr multi-instance config (Integrations page): every detected Jellyseerr/Overseerr/
+// Seerr container, each with its own URL + API key.
+export interface SeerrInstance { name: string; url: string; api_key: string; default?: boolean }
+export const useSeerrInstances = () =>
+  useQuery<{ instances: SeerrInstance[] }>({ queryKey: ['seerr-instances'], queryFn: () => request('/seerr/instances') })
+export const useSaveSeerrInstances = () =>
+  useMutation<{ ok: boolean }, Error, SeerrInstance[]>({ mutationFn: (list) => request('/seerr/instances', { method: 'PUT', body: JSON.stringify({ instances: list }) }) })
+
 // teldrive (tgdrive) panel — only active when teldrive remotes exist.
 export const useTeldriveRemotes = () =>
   useQuery<{ remotes: string[] }>({ queryKey: ['teldrive-remotes'], queryFn: () => request('/teldrive/remotes'), staleTime: 60_000 })
@@ -866,9 +874,12 @@ export const useToggleTask = () =>
   useMutation<TransferTask, Error, string>({ mutationFn: (id) => request(`/tasks/${id}/toggle`, { method: 'POST' }) })
 
 export interface UploaderRemote { task_id?: string; name: string; dest: string; cap: string; cap_files?: number; gap_min: number; bwlimit: string; tpslimit: number }
+export interface BalanceConfig { enabled: boolean; max_streak: number; no_repeat: boolean }
+export interface QbitConfig { enabled: boolean; action: 'pause' | 'throttle'; dl_kbps: number; up_kbps: number }
+export interface PauseConfig { arr_disable: boolean; plex_kill_transcode: boolean; autoscan_hold: boolean; qbit: QbitConfig }
 export interface UploaderConfig {
-  enabled: boolean; source: string; threshold: string; strategy: 'lru' | 'round_robin' | 'most_free'; interval_minutes: number
-  allowed_from?: string; allowed_until?: string; min_age?: string; delete_empty_src?: boolean; excludes?: string[]
+  enabled: boolean; source: string; subpath?: string; cap?: string; cap_files?: number; gap_min?: number; threshold: string; strategy: 'lru' | 'round_robin' | 'most_free'; balance?: BalanceConfig; pause?: PauseConfig; interval_minutes: number
+  allowed_from?: string; allowed_until?: string; min_age?: string; delete_empty_src?: boolean; opts?: TransferOpts; excludes?: string[]
   remotes: UploaderRemote[]
 }
 export interface UploaderStatus {
@@ -884,6 +895,9 @@ export const useUploaderStatus = () =>
   useQuery<UploaderStatus>({ queryKey: ['uploader-status'], queryFn: () => request('/uploader/status'), refetchInterval: 5000 })
 export const useUploaderRun = () =>
   useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/uploader/run', { method: 'POST' }) })
+export interface BlockReport { action: string; qbit: string; arr: string; plex: string; autoscan: string }
+export const useUploaderTestBlock = () =>
+  useMutation<BlockReport, Error, { action: 'apply' | 'restore'; pause?: PauseConfig }>({ mutationFn: (b) => request('/uploader/test-block', { method: 'POST', body: JSON.stringify(b) }) })
 
 export interface SimStep { kind: 'move' | 'wait' | 'blocked'; at: string; until?: string; remote?: string; task_id?: string; bytes?: string; files?: number; max_transfer?: string; remaining?: string; rate?: string; took_min?: number; paused?: boolean; note?: string }
 export interface SimRemote { name: string; task_id?: string; bytes: string; files: number; cap: string; cap_files: number }

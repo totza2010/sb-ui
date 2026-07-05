@@ -21,6 +21,10 @@ export function TgDrive() {
   const nav = useNavigate()
   const results = data?.results ?? []
   const maxRemote = Math.max(1, ...(storage?.remotes ?? []).map((r) => r.bytes))
+  // Teldrive/Telegram storage is effectively unbounded, so scale each bar against an
+  // assumed per-account capacity (1 PiB, doubling if an account ever exceeds it)
+  // rather than the largest account — otherwise the biggest one is always pegged full.
+  const assumedCap = (() => { let c = 1024 ** 5; while (maxRemote > c * 0.85) c *= 2; return c })()
 
   return (
     <div className="p-6 space-y-4">
@@ -68,8 +72,8 @@ export function TgDrive() {
                 {storage.remotes.map((r) => (
                   <div key={r.remote} className="flex items-center gap-2 text-[11px]">
                     <span className="w-32 shrink-0 truncate text-foreground">{r.remote}</span>
-                    <div className="flex-1 h-2 rounded bg-secondary overflow-hidden">
-                      <div className="h-full bg-primary" style={{ width: `${(r.bytes / maxRemote) * 100}%` }} />
+                    <div className="flex-1 h-2 rounded bg-secondary overflow-hidden" title={`${((r.bytes / assumedCap) * 100).toFixed(1)}% of assumed capacity`}>
+                      <div className="h-full bg-primary" style={{ width: `${Math.min(100, (r.bytes / assumedCap) * 100)}%` }} />
                     </div>
                     <span className="w-28 shrink-0 text-right text-muted-foreground tabular-nums">{r.human} · {r.files.toLocaleString()}</span>
                   </div>
