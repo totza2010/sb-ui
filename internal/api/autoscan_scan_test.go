@@ -183,6 +183,50 @@ func TestAutoscanPauseHold(t *testing.T) {
 	}
 }
 
+// While paused, Enqueue must not arm timers (a timer armed mid-pause keeps its old
+// countdown and would fire early right after Resume). Resume re-arms every queued
+// scan with a fresh, staggered countdown.
+func TestAutoscanPauseNoTimersResumeReArms(t *testing.T) {
+	noPersist(t)
+	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600, ScanGapSec: 5}})
+
+	s := newAutoscanService()
+	s.Pause()
+	s.Enqueue("upload", "", "/m/A/ep.mkv")
+	s.Enqueue("upload", "", "/m/B/ep.mkv")
+
+	s.mu.Lock()
+	nTimers, nActive := len(s.timers), len(s.active)
+	var heldFire bool
+	for _, r := range s.records {
+		if r.FireAt != nil {
+			heldFire = true
+		}
+	}
+	s.mu.Unlock()
+	if nTimers != 0 {
+		t.Fatalf("no timers should be armed while paused, got %d", nTimers)
+	}
+	if nActive != 2 {
+		t.Fatalf("both scans should be queued (active), got %d", nActive)
+	}
+	if heldFire {
+		t.Fatal("FireAt must be nil (held) while paused")
+	}
+
+	s.Resume()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.timers) != 2 {
+		t.Fatalf("Resume must re-arm a timer per queued scan, got %d", len(s.timers))
+	}
+	for _, r := range s.records {
+		if r.Status == scanPending && r.FireAt == nil {
+			t.Fatalf("Resume must set a fresh FireAt on each pending record: %+v", r)
+		}
+	}
+}
+
 func TestAutoscanFireSkipped(t *testing.T) {
 	noPersist(t)
 	noThrottle(t)

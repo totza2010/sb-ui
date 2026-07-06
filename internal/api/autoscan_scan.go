@@ -216,6 +216,9 @@ func (s *autoscanService) Resume() {
 			}
 		}
 		k := key
+		if t := s.timers[k]; t != nil { // drop any stale timer armed before/during the pause
+			t.Stop()
+		}
 		s.timers[k] = time.AfterFunc(wait, func() { s.fire(k) })
 		i++
 	}
@@ -284,9 +287,19 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 	delay := autoscanDelay()
 	ac := loadOptions().Autoscan
 	now := time.Now()
-	fireAt := now.Add(delay)
 	n := 0
 	s.mu.Lock()
+	// While paused (e.g. mid-upload) we still record hits and hold records pending,
+	// but arm NO timers — otherwise a timer set during the pause keeps its old
+	// countdown and fires early right after Resume. Resume is the sole thing that
+	// arms timers after a pause, all with a fresh staggered countdown. FireAt stays
+	// nil so the UI shows the row as "held".
+	paused := s.paused
+	var fireAt *time.Time
+	if !paused {
+		t := now.Add(delay)
+		fireAt = &t
+	}
 	for _, raw := range raws {
 		if !autoscanKeep(raw, ac) {
 			continue
@@ -301,23 +314,27 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 			for i := range s.records {
 				if s.records[i].ID == id {
 					s.records[i].Hits = append(s.records[i].Hits, hit)
-					s.records[i].FireAt = &fireAt // debounce reset
+					s.records[i].FireAt = fireAt // debounce reset (nil while paused; Resume sets it)
 					break
 				}
 			}
-			if t := s.timers[key]; t != nil {
-				t.Reset(delay)
+			if !paused {
+				if t := s.timers[key]; t != nil {
+					t.Reset(delay)
+				}
 			}
 			continue
 		}
 		s.nextID++
-		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, Event: event, Hits: []scanHit{hit}, FireAt: &fireAt, CreatedAt: now}}, s.records...)
+		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, Event: event, Hits: []scanHit{hit}, FireAt: fireAt, CreatedAt: now}}, s.records...)
 		if len(s.records) > autoscanScansMax {
 			s.records = s.records[:autoscanScansMax]
 		}
 		s.active[key] = s.nextID
-		k := key
-		s.timers[k] = time.AfterFunc(delay, func() { s.fire(k) })
+		if !paused {
+			k := key
+			s.timers[k] = time.AfterFunc(delay, func() { s.fire(k) })
+		}
 	}
 	snap := s.snapshotLocked()
 	s.mu.Unlock()
@@ -474,7 +491,7 @@ func (s *autoscanService) counts() map[string]int {
 func (s *autoscanService) queueDepth() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.timers)
+	return len(s.active) // pending scans (accurate even while paused, when no timers are armed)
 }
 
 func (s *autoscanService) clear() {
