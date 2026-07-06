@@ -1,8 +1,38 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
+
+func TestWebhookAuthorized(t *testing.T) {
+	const tok = "secret123"
+	mk := func(f func(*http.Request)) *http.Request {
+		r := httptest.NewRequest("POST", "/api/autoscan/webhook", nil)
+		f(r)
+		return r
+	}
+	cases := []struct {
+		name string
+		r    *http.Request
+		want bool
+	}{
+		{"header", mk(func(r *http.Request) { r.Header.Set("X-API-Key", tok) }), true},
+		{"query", mk(func(r *http.Request) { r.URL.RawQuery = "apikey=" + tok }), true},
+		{"basic", mk(func(r *http.Request) { r.SetBasicAuth("anyuser", tok) }), true},
+		{"basic-wrong", mk(func(r *http.Request) { r.SetBasicAuth("u", "nope") }), false},
+		{"none", mk(func(*http.Request) {}), false},
+	}
+	for _, c := range cases {
+		if got := webhookAuthorized(c.r, tok); got != c.want {
+			t.Errorf("%s: webhookAuthorized = %v, want %v", c.name, got, c.want)
+		}
+	}
+	if webhookAuthorized(mk(func(r *http.Request) { r.Header.Set("X-API-Key", "x") }), "") {
+		t.Error("empty configured token must reject everything")
+	}
+}
 
 // setOptForTest replaces the cached options for the duration of a test.
 func setOptForTest(t *testing.T, c optionsConfig) {

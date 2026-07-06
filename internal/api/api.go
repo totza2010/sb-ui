@@ -116,6 +116,7 @@ func Mount(r chi.Router) {
 	// Built-in autoscan (docs/autoscan-plan.md)
 	r.Post("/api/autoscan/trigger", autoscanTrigger)
 	r.Post("/api/autoscan/webhook/{token}", autoscanWebhook)
+	r.Post("/api/autoscan/webhook", autoscanWebhook) // token via X-API-Key header / ?apikey= / Basic Auth
 	r.Get("/api/autoscan/status", autoscanStatusHandler)
 	r.Post("/api/autoscan/clear", autoscanClear)
 	r.Get("/api/autoscan/config", autoscanGetConfig)

@@ -44,7 +44,9 @@ export function AutoscanPanel() {
 
   const doSave = () => persist(cfg)
   const regenToken = () => persist({ ...cfg, webhook_token: '' }) // backend mints a fresh one
-  const webhookURL = cfg.webhook_token ? `${window.location.origin}/api/autoscan/webhook/${cfg.webhook_token}` : ''
+  const webhookBase = `${window.location.origin}/api/autoscan/webhook`
+  const webhookURL = cfg.webhook_token ? `${webhookBase}/${cfg.webhook_token}` : ''
+  const copyText = (s: string) => { navigator.clipboard.writeText(s); setCopied(true); setTimeout(() => setCopied(false), 1500) }
   const copyURL = () => { if (webhookURL) { navigator.clipboard.writeText(webhookURL); setCopied(true); setTimeout(() => setCopied(false), 1500) } }
   const runTest = () => { const p = testPath.trim(); if (p) trigger.mutate([p], { onSuccess: () => { setTestPath(''); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) } }) }
 
@@ -95,13 +97,22 @@ export function AutoscanPanel() {
         {/* webhook */}
         <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
           <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Sonarr / Radarr webhook</p>
-          <p className="text-[11px] text-muted-foreground">In each *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, On Import / On Rename / On Upgrade, URL below. The token authenticates the call.</p>
+          <p className="text-[11px] text-muted-foreground">In each *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, tick On Import / On Rename / On Upgrade, then paste the URL below.</p>
           <div className="flex gap-1.5">
             <Input readOnly className="h-8 font-mono text-xs" value={webhookURL} placeholder="save to generate a URL" onFocus={(e) => e.currentTarget.select()} />
             <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Copy" onClick={copyURL} disabled={!webhookURL}>{copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}</Button>
             <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Regenerate token" onClick={regenToken} disabled={save.isPending}><RefreshCw className={cn('h-3.5 w-3.5', save.isPending && 'animate-spin')} /></Button>
           </div>
-          <p className="text-[10px] text-muted-foreground">Reachable from your *arr containers (host address, not 127.0.0.1). Regenerating invalidates the old URL.</p>
+          <div className="space-y-1 rounded-md border border-border bg-secondary/20 p-2 text-[10px] text-muted-foreground">
+            <p className="text-foreground">Authenticate any of these ways:</p>
+            <p>• <span className="text-foreground">Paste the URL above</span> — token is in the path (simplest).</p>
+            <p>• Base URL <span className="font-mono text-foreground">{webhookBase}</span> + token in the <span className="font-mono text-foreground">X-API-Key</span> header (or <span className="font-mono">?apikey=</span>).</p>
+            <p>• <span className="text-foreground">Username/Password</span> in *arr: username = anything, <span className="text-foreground">password = the token</span>.</p>
+            <p className="flex items-center gap-1.5 pt-0.5">Token: <span className="min-w-0 flex-1 truncate font-mono text-foreground">{cfg.webhook_token || '—'}</span>
+              <button type="button" className="shrink-0 text-primary hover:underline" onClick={() => cfg.webhook_token && copyText(cfg.webhook_token)}>copy</button>
+            </p>
+            <p className="text-muted-foreground/70">Reachable from your *arr containers (host address, not 127.0.0.1). Regenerating invalidates it.</p>
+          </div>
         </Card>
       </div>
 

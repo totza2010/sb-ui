@@ -29,9 +29,25 @@ func autoscanTrigger(w http.ResponseWriter, req *http.Request) {
 // autoscanWebhook accepts Sonarr/Radarr "Connect" webhooks (and a generic {paths}
 // body). The {token} in the URL must match the configured webhook token — the API is
 // otherwise unauthenticated, so this guards the publicly-pointed endpoint.
+// webhookAuthorized accepts the autoscan token presented any way an *arr Connect
+// webhook can send it: in the URL path, an X-API-Key header, an ?apikey= query
+// param, or as the HTTP Basic Auth password (username ignored).
+func webhookAuthorized(req *http.Request, token string) bool {
+	if token == "" {
+		return false
+	}
+	if chi.URLParam(req, "token") == token || req.Header.Get("X-API-Key") == token || req.URL.Query().Get("apikey") == token {
+		return true
+	}
+	if _, pass, ok := req.BasicAuth(); ok && pass == token {
+		return true
+	}
+	return false
+}
+
 func autoscanWebhook(w http.ResponseWriter, req *http.Request) {
 	ac := loadOptions().Autoscan
-	if ac.WebhookToken == "" || chi.URLParam(req, "token") != ac.WebhookToken {
+	if !webhookAuthorized(req, ac.WebhookToken) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
