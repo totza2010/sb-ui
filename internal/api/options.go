@@ -52,6 +52,7 @@ type autoscanConfig struct {
 	DelaySec     int    `json:"delay_sec"`     // debounce window before a path is scanned; default 5
 	OnUpload     bool   `json:"on_upload"`     // scan the moved paths after an uploader run
 	WebhookToken string `json:"webhook_token"` // shared secret embedded in the arr webhook URL
+	LogSkipped   bool   `json:"log_skipped"`   // also record webhook events we don't scan (debug)
 	// Filtering (autoplow-style) — drop events that don't warrant a Plex scan.
 	ExcludeExts  []string `json:"exclude_exts"`  // file extensions to ignore (srt, nfo, …)
 	ExcludePaths []string `json:"exclude_paths"` // path prefixes to ignore

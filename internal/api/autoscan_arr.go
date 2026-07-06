@@ -15,6 +15,7 @@ import (
 type arrScan struct {
 	Source string   // sonarr / radarr / lidarr / readarr
 	Event  string   // arr eventType (Download, Rename, …)
+	Ref    string   // the root folder the *arr referenced (for the skipped-event log)
 	Paths  []string // file/folder paths (plexScanKey collapses files to their folder)
 }
 
@@ -57,13 +58,14 @@ func parseSonarr(body []byte) (arrScan, bool) {
 	if json.Unmarshal(body, &b) != nil || b.Series.Path == "" {
 		return arrScan{}, false
 	}
-	s := arrScan{Source: "sonarr", Event: b.EventType}
+	// Scan the episode's own folder, never the series root — scanning /Show would
+	// re-list every season for a single new episode. Import + the immediate Rename
+	// then resolve to the same season folder and coalesce into one scan.
+	s := arrScan{Source: "sonarr", Event: b.EventType, Ref: b.Series.Path}
 	switch {
 	case eqFold(b.EventType, "Download", "EpisodeFileDelete"):
 		if b.EpisodeFile.RelativePath != "" {
 			s.Paths = append(s.Paths, path.Join(b.Series.Path, b.EpisodeFile.RelativePath))
-		} else {
-			s.Paths = append(s.Paths, b.Series.Path)
 		}
 	case eqFold(b.EventType, "Rename"):
 		for _, rf := range b.RenamedEpisodeFiles {
@@ -74,11 +76,8 @@ func parseSonarr(body []byte) (arrScan, bool) {
 				s.Paths = append(s.Paths, path.Join(b.Series.Path, rf.RelativePath))
 			}
 		}
-		if len(b.RenamedEpisodeFiles) == 0 {
-			s.Paths = append(s.Paths, b.Series.Path)
-		}
 	case eqFold(b.EventType, "SeriesDelete"):
-		s.Paths = append(s.Paths, b.Series.Path)
+		s.Paths = append(s.Paths, b.Series.Path) // whole series removed → scan the show root
 	}
 	return s, true
 }
@@ -93,7 +92,7 @@ func parseRadarr(body []byte) (arrScan, bool) {
 	if json.Unmarshal(body, &b) != nil || b.Movie.FolderPath == "" {
 		return arrScan{}, false
 	}
-	s := arrScan{Source: "radarr", Event: b.EventType}
+	s := arrScan{Source: "radarr", Event: b.EventType, Ref: b.Movie.FolderPath}
 	switch {
 	case eqFold(b.EventType, "Download", "MovieFileDelete"):
 		if b.MovieFile.RelativePath != "" {
@@ -117,16 +116,13 @@ func parseLidarr(body []byte) (arrScan, bool) {
 	if json.Unmarshal(body, &b) != nil || b.Artist.Path == "" {
 		return arrScan{}, false
 	}
-	s := arrScan{Source: "lidarr", Event: b.EventType}
+	s := arrScan{Source: "lidarr", Event: b.EventType, Ref: b.Artist.Path}
 	switch {
 	case eqFold(b.EventType, "Download", "TrackFileDelete", "Rename", "Retag"):
-		for _, tf := range b.TrackFiles {
+		for _, tf := range b.TrackFiles { // album folders, not the whole artist
 			if tf.Path != "" {
 				s.Paths = append(s.Paths, tf.Path)
 			}
-		}
-		if len(s.Paths) == 0 {
-			s.Paths = append(s.Paths, b.Artist.Path)
 		}
 	case eqFold(b.EventType, "ArtistDelete"):
 		s.Paths = append(s.Paths, b.Artist.Path)
@@ -144,16 +140,13 @@ func parseReadarr(body []byte) (arrScan, bool) {
 	if json.Unmarshal(body, &b) != nil || b.Author.Path == "" {
 		return arrScan{}, false
 	}
-	s := arrScan{Source: "readarr", Event: b.EventType}
+	s := arrScan{Source: "readarr", Event: b.EventType, Ref: b.Author.Path}
 	switch {
 	case eqFold(b.EventType, "Download", "BookFileDelete", "Rename", "Retag"):
-		for _, bf := range b.BookFiles {
+		for _, bf := range b.BookFiles { // book folders, not the whole author
 			if bf.Path != "" {
 				s.Paths = append(s.Paths, bf.Path)
 			}
-		}
-		if len(s.Paths) == 0 {
-			s.Paths = append(s.Paths, b.Author.Path)
 		}
 	case eqFold(b.EventType, "AuthorDelete"):
 		s.Paths = append(s.Paths, b.Author.Path)

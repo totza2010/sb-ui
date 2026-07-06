@@ -92,13 +92,16 @@ func autoscanWebhook(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Detect the *arr and extract the folders to scan (per-app parsers in autoscan_arr.go).
-	scan, _ := parseArrWebhook(body)
+	scan, matched := parseArrWebhook(body)
 	source := "webhook"
 	if scan.Source != "" {
 		source = scan.Source
 	}
 	paths := append(append([]string{}, meta.Paths...), scan.Paths...)
 	if len(paths) == 0 { // unknown app or an event we don't scan on — acknowledge, do nothing
+		if matched && ac.LogSkipped { // debug: record what the *arr sent (e.g. a series-level rename)
+			autoscanSvc().LogIgnored(scan.Source, scan.Event, scan.Ref, "")
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": 0, "ignored": meta.EventType})
 		return
 	}

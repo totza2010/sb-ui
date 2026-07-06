@@ -35,6 +35,7 @@ const (
 	scanCompleted scanStatus = "completed"
 	scanSkipped   scanStatus = "skipped" // no matching Plex section
 	scanFailed    scanStatus = "failed"
+	scanIgnored   scanStatus = "ignored" // webhook received but not scanned (debug log)
 )
 
 type scanRecord struct {
@@ -210,6 +211,20 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 	return n
 }
 
+// LogIgnored records a webhook event we received but chose not to scan (for the
+// debug "log skipped" view — no timer, no scan). ref = the folder the *arr sent.
+func (s *autoscanService) LogIgnored(source, event, ref, note string) {
+	s.mu.Lock()
+	s.nextID++
+	s.records = append([]scanRecord{{ID: s.nextID, Path: ref, Status: scanIgnored, Source: source, Event: event, Error: note, CreatedAt: time.Now()}}, s.records...)
+	if len(s.records) > autoscanScansMax {
+		s.records = s.records[:autoscanScansMax]
+	}
+	snap := s.snapshotLocked()
+	s.mu.Unlock()
+	autoscanSaveFn(snap)
+}
+
 func (s *autoscanService) fire(key string) {
 	s.mu.Lock()
 	delete(s.timers, key)
@@ -277,7 +292,7 @@ func (s *autoscanService) recentScans() []scanRecord {
 func (s *autoscanService) counts() map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c := map[string]int{"pending": 0, "scanning": 0, "completed": 0, "skipped": 0, "failed": 0}
+	c := map[string]int{"pending": 0, "scanning": 0, "completed": 0, "skipped": 0, "failed": 0, "ignored": 0}
 	for _, r := range s.records {
 		c[string(r.Status)]++
 	}

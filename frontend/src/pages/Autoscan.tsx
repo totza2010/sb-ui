@@ -56,7 +56,7 @@ export function AutoscanPanel() {
   const copyText = (s: string, key = 's') => { if (!s) return; navigator.clipboard.writeText(s); setCopiedKey(key); setTimeout(() => setCopiedKey(''), 1500) }
   const runTest = () => { const p = testPath.trim(); if (p) trigger.mutate([p], { onSuccess: () => { setTestPath(''); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) } }) }
 
-  const counts = status?.counts ?? { pending: 0, scanning: 0, completed: 0, skipped: 0, failed: 0 }
+  const counts = status?.counts ?? { pending: 0, scanning: 0, completed: 0, skipped: 0, failed: 0, ignored: 0 }
   const scans = status?.scans ?? []
   const rows = scans.filter((r) => filter === 'all' || r.status === filter || (filter === 'failed' && r.status === 'skipped'))
 
@@ -99,7 +99,7 @@ export function AutoscanPanel() {
             {/* toolbar: filter + test-a-path + clear */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="inline-flex gap-0.5 rounded-lg border border-border bg-muted p-0.5">
-                {(['all', 'pending', 'scanning', 'completed', 'failed'] as const).map((f) => (
+                {(['all', 'pending', 'scanning', 'completed', 'failed', 'ignored'] as const).map((f) => (
                   <button key={f} onClick={() => setFilter(f)}
                     className={cn('rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors', filter === f ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{f}</button>
                 ))}
@@ -166,6 +166,13 @@ export function AutoscanPanel() {
                   <p className="text-[10px] text-muted-foreground">When the Uploader moves files, scan the moved paths (needs a path mapping to the Plex side).</p>
                 </div>
               </div>
+
+              <label className="flex items-center justify-between gap-3 border-t border-border/60 pt-3">
+                <span className="text-sm text-foreground">Log skipped webhooks
+                  <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">Debug — also record events we don't scan (Grab, series-level rename, …) in the history, to see exactly what each *arr sends.</span>
+                </span>
+                <Switch checked={!!cfg.log_skipped} onCheckedChange={(v) => up('log_skipped', v)} />
+              </label>
             </Card>
 
             {/* webhook */}
@@ -330,6 +337,7 @@ const STATUS_META: Record<ScanStatus, { cls: string; Icon: typeof Clock }> = {
   scanning: { cls: 'bg-primary/15 text-primary', Icon: Loader2 },
   completed: { cls: 'bg-success/15 text-success', Icon: CheckCircle2 },
   skipped: { cls: 'bg-muted text-muted-foreground', Icon: MinusCircle },
+  ignored: { cls: 'bg-muted text-muted-foreground/70', Icon: MinusCircle },
   failed: { cls: 'bg-destructive/15 text-destructive', Icon: XCircle },
 }
 function StatusPill({ status, error }: { status: ScanStatus; error?: string }) {

@@ -174,6 +174,8 @@ func TestParseArrWebhook(t *testing.T) {
 		{"sonarr download", `{"eventType":"Download","series":{"path":"/tv/Show"},"episodeFile":{"relativePath":"Season 1/ep.mkv"}}`, "sonarr", "/tv/Show/Season 1/ep.mkv"},
 		{"radarr download", `{"eventType":"Download","movie":{"folderPath":"/movies/Film (2020)"},"movieFile":{"relativePath":"Film.mkv"}}`, "radarr", "/movies/Film (2020)/Film.mkv"},
 		{"sonarr seriesdelete", `{"eventType":"SeriesDelete","series":{"path":"/tv/Show"}}`, "sonarr", "/tv/Show"},
+		{"sonarr download no-file (no show-root scan)", `{"eventType":"Download","series":{"path":"/tv/Show"}}`, "sonarr", ""},
+		{"sonarr rename", `{"eventType":"Rename","series":{"path":"/tv/Show"},"renamedEpisodeFiles":[{"relativePath":"Season 1/ep.mkv"}]}`, "sonarr", "/tv/Show/Season 1/ep.mkv"},
 		{"lidarr download", `{"eventType":"Download","artist":{"path":"/music/Artist"},"trackFiles":[{"path":"/music/Artist/Album/t.flac"}]}`, "lidarr", "/music/Artist/Album/t.flac"},
 		{"sonarr grab (no scan)", `{"eventType":"Grab","series":{"path":"/tv/Show"}}`, "sonarr", ""},
 		{"unknown", `{"eventType":"Download","foo":{"bar":1}}`, "", ""},
