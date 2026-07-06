@@ -44,12 +44,27 @@ type tmdbConfig struct {
 	APIKey string `json:"api_key"`
 }
 
+// autoscanConfig drives the built-in autoscan (docs/autoscan-plan.md): a debounced
+// Plex partial-scan service fed by arr webhooks / manual triggers / post-upload.
+// Path rewriting reuses the top-level PathMappings (mapArrPath).
+type autoscanConfig struct {
+	Enabled      bool   `json:"enabled"`
+	DelaySec     int    `json:"delay_sec"`     // debounce window before a path is scanned; default 5
+	OnUpload     bool   `json:"on_upload"`     // scan the moved paths after an uploader run
+	WebhookToken string `json:"webhook_token"` // shared secret embedded in the arr webhook URL
+	// Filtering (autoplow-style) — drop events that don't warrant a Plex scan.
+	ExcludeExts  []string `json:"exclude_exts"`  // file extensions to ignore (srt, nfo, …)
+	ExcludePaths []string `json:"exclude_paths"` // path prefixes to ignore
+	IncludePaths []string `json:"include_paths"` // if set, only paths under one of these scan
+}
+
 type optionsConfig struct {
-	Plex         plexConfig    `json:"plex"`
-	PathMappings []pathMapping `json:"path_mappings"`
-	Seerr        seerrConfig   `json:"seerr"`
-	Tmdb         tmdbConfig    `json:"tmdb"`
-	Qbit         qbitConn      `json:"qbit"` // qBittorrent WebUI (used by the uploader's block module)
+	Plex         plexConfig     `json:"plex"`
+	PathMappings []pathMapping  `json:"path_mappings"`
+	Seerr        seerrConfig    `json:"seerr"`
+	Tmdb         tmdbConfig     `json:"tmdb"`
+	Qbit         qbitConn       `json:"qbit"`     // qBittorrent WebUI (used by the uploader's block module)
+	Autoscan     autoscanConfig `json:"autoscan"` // built-in autoscan service
 }
 
 // mapArrPath rewrites an arr path to the Plex path using the longest matching
@@ -88,6 +103,20 @@ func getOptions(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, loadOptions())
 }
 
+// saveAutoscanConfig patches only the Autoscan field of the persisted options and
+// returns the stored value (so the autoscan endpoints don't clobber the rest).
+func saveAutoscanConfig(ac autoscanConfig) autoscanConfig {
+	optMu.Lock()
+	defer optMu.Unlock()
+	if !optLoaded {
+		store.ReadJSON(optionsRel, &optCfg)
+		optLoaded = true
+	}
+	optCfg.Autoscan = ac
+	store.WriteJSON(optionsRel, optCfg)
+	return optCfg.Autoscan
+}
+
 func putOptions(w http.ResponseWriter, req *http.Request) {
 	var c optionsConfig
 	if json.NewDecoder(req.Body).Decode(&c) != nil {
@@ -95,8 +124,12 @@ func putOptions(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	optMu.Lock()
+	if !optLoaded {
+		store.ReadJSON(optionsRel, &optCfg)
+		optLoaded = true
+	}
+	c.Autoscan = optCfg.Autoscan // autoscan is managed only via /api/autoscan/config
 	optCfg = c
-	optLoaded = true
 	store.WriteJSON(optionsRel, optCfg)
 	optMu.Unlock()
 	resetPlexDirs() // Plex URL/token may have changed → rebuild the path index

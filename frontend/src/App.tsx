@@ -11,6 +11,7 @@ import { Inventory } from '@/pages/Inventory'
 import { Backup } from '@/pages/Backup'
 import { Files } from '@/pages/Files'
 import { Uploader } from '@/pages/Uploader'
+import { Autoscan } from '@/pages/Autoscan'
 import { Library } from '@/pages/Library'
 import { Discover } from '@/pages/Discover'
 import { Integrations } from '@/pages/Integrations'
@@ -67,6 +68,7 @@ function AppInner() {
             <Route path="/files" element={<Files />} />
             <Route path="/transfers" element={<Navigate to="/uploader" replace />} />
             <Route path="/uploader" element={<Uploader />} />
+            <Route path="/autoscan" element={<Autoscan />} />
             <Route path="/library" element={<Library />} />
             <Route path="/discover" element={<Discover />} />
             <Route path="/integrations" element={<Integrations />} />

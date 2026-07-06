@@ -817,6 +817,23 @@ export const useSaveOptions = () =>
 export const usePlexTest = () =>
   useMutation<{ ok: boolean; streams: number; sections: string[] }, Error, { url: string; token: string } | void>({ mutationFn: (b) => request('/plex/test', { method: 'POST', body: JSON.stringify(b ?? {}) }) })
 
+// Built-in autoscan (Settings → Autoscan): a debounced Plex partial-scan service fed
+// by arr webhooks / manual triggers / post-upload. See docs/autoscan-plan.md.
+export interface AutoscanConfig { enabled: boolean; delay_sec: number; on_upload: boolean; webhook_token: string; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[] }
+export type ScanStatus = 'pending' | 'scanning' | 'completed' | 'skipped' | 'failed'
+export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; error?: string; created_at: string; started_at?: string; ended_at?: string }
+export interface AutoscanStatus { enabled: boolean; queued: number; counts: Record<ScanStatus, number>; scans: ScanRecord[] }
+export const useAutoscanConfig = () =>
+  useQuery<AutoscanConfig>({ queryKey: ['autoscan-config'], queryFn: () => request('/autoscan/config') })
+export const useSaveAutoscanConfig = () =>
+  useMutation<AutoscanConfig, Error, AutoscanConfig>({ mutationFn: (c) => request('/autoscan/config', { method: 'PUT', body: JSON.stringify(c) }) })
+export const useAutoscanStatus = () =>
+  useQuery<AutoscanStatus>({ queryKey: ['autoscan-status'], queryFn: () => request('/autoscan/status'), refetchInterval: 5000 })
+export const useAutoscanTrigger = () =>
+  useMutation<{ ok: boolean; queued: number }, Error, string[]>({ mutationFn: (paths) => request('/autoscan/trigger', { method: 'POST', body: JSON.stringify({ paths }) }) })
+export const useAutoscanClear = () =>
+  useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/autoscan/clear', { method: 'POST' }) })
+
 // Seerr multi-instance config (Integrations page): every detected Jellyseerr/Overseerr/
 // Seerr container, each with its own URL + API key.
 export interface SeerrInstance { name: string; url: string; api_key: string; default?: boolean }

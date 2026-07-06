@@ -112,6 +112,15 @@ func Mount(r chi.Router) {
 	r.Get("/api/arr/files", arrFiles)
 	r.Post("/api/arr/command", arrCommand)
 	r.Post("/api/arr/plex-refresh", arrPlexRefresh)
+
+	// Built-in autoscan (docs/autoscan-plan.md)
+	r.Post("/api/autoscan/trigger", autoscanTrigger)
+	r.Post("/api/autoscan/webhook/{token}", autoscanWebhook)
+	r.Get("/api/autoscan/status", autoscanStatusHandler)
+	r.Post("/api/autoscan/clear", autoscanClear)
+	r.Get("/api/autoscan/config", autoscanGetConfig)
+	r.Put("/api/autoscan/config", autoscanPutConfig)
+
 	r.Get("/api/integrations", integrationsStatus)
 	r.Get("/api/discover", tmdbDiscover)
 	r.Get("/api/discover/home", discoverHome)

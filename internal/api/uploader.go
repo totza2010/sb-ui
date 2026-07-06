@@ -726,6 +726,18 @@ func uploaderCheck() {
 	moved, files, flood := uploadRunner("uploader: "+transferLabel(op, items, dst), r.TaskID, op, items, dst, opts)
 	restoreUploadPause(cfg.Pause)
 
+	// Post-upload: let the built-in autoscan pick up the moved paths (Plex-visible
+	// side, via path mappings) instead of docker-pausing an external autoscan.
+	if files > 0 {
+		if au := loadOptions().Autoscan; au.Enabled && au.OnUpload {
+			paths := make([]string, 0, len(items))
+			for _, it := range items {
+				paths = append(paths, it.Path)
+			}
+			autoscanSvc().Enqueue("upload", paths...)
+		}
+	}
+
 	now = time.Now()
 	upMu.Lock()
 	recordUpload(remoteKey(*r), moved, files, now)
