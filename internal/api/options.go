@@ -53,6 +53,15 @@ type autoscanConfig struct {
 	OnUpload     bool   `json:"on_upload"`     // scan the moved paths after an uploader run
 	WebhookToken string `json:"webhook_token"` // shared secret embedded in the arr webhook URL
 	LogSkipped   bool   `json:"log_skipped"`   // also record webhook events we don't scan (debug)
+	// Anchors — absolute files that must exist before a scan is sent (autoplow-style).
+	// If any is missing the mount is considered down and the scan is held, so Plex
+	// won't remove items when a rclone mount drops.
+	Anchors []string `json:"anchors"`
+	// Completion detection — poll Plex /activities so a scan only shows Completed once
+	// Plex has actually finished (not just when the refresh was triggered).
+	WaitCompletion bool `json:"wait_completion"`
+	IdleSec        int  `json:"idle_sec"`    // no scan activity for this long = done (default 30)
+	TimeoutSec     int  `json:"timeout_sec"` // give up waiting after this (default 300)
 	// Filtering (autoplow-style) — drop events that don't warrant a Plex scan.
 	ExcludeExts  []string `json:"exclude_exts"`  // file extensions to ignore (srt, nfo, …)
 	ExcludePaths []string `json:"exclude_paths"` // path prefixes to ignore

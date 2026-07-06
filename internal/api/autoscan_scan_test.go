@@ -119,6 +119,27 @@ func TestAutoscanFireCompleted(t *testing.T) {
 	}
 }
 
+func TestAutoscanAnchorHold(t *testing.T) {
+	noPersist(t)
+	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600, Anchors: []string{"/mnt/unionfs/mounted.bin"}}})
+	prevAnchor, prevScan := autoscanAnchorFn, autoscanScanFn
+	scanned := false
+	autoscanAnchorFn = func([]string) (bool, string) { return false, "/mnt/unionfs/mounted.bin" } // mount down
+	autoscanScanFn = func(plexConfig, string, string) error { scanned = true; return nil }
+	t.Cleanup(func() { autoscanAnchorFn, autoscanScanFn = prevAnchor, prevScan })
+
+	s := newAutoscanService()
+	s.Enqueue("manual", "", "/mnt/unionfs/Media/TV/Show/ep.mkv")
+	s.fire(plexScanKey("/mnt/unionfs/Media/TV/Show/ep.mkv"))
+
+	if scanned {
+		t.Fatal("must not scan Plex while an anchor is missing")
+	}
+	if recs := s.recentScans(); len(recs) != 1 || recs[0].Status != scanSkipped {
+		t.Fatalf("want 1 skipped (mount not ready) record, got %+v", recs)
+	}
+}
+
 func TestAutoscanFireSkipped(t *testing.T) {
 	noPersist(t)
 	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})

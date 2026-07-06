@@ -819,7 +819,7 @@ export const usePlexTest = () =>
 
 // Built-in autoscan (Settings → Autoscan): a debounced Plex partial-scan service fed
 // by arr webhooks / manual triggers / post-upload. See docs/autoscan-plan.md.
-export interface AutoscanConfig { enabled: boolean; delay_sec: number; on_upload: boolean; webhook_token: string; log_skipped?: boolean; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[] }
+export interface AutoscanConfig { enabled: boolean; delay_sec: number; on_upload: boolean; webhook_token: string; log_skipped?: boolean; anchors?: string[]; wait_completion?: boolean; idle_sec?: number; timeout_sec?: number; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[] }
 export type ScanStatus = 'pending' | 'scanning' | 'completed' | 'skipped' | 'failed' | 'ignored'
 export interface ScanHit { time: string; source: string; event?: string; path: string }
 export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; event?: string; error?: string; hits?: ScanHit[]; created_at: string; started_at?: string; ended_at?: string }

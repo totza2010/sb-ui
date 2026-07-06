@@ -7,20 +7,41 @@ package api
 // a persistent history with a pending → scanning → completed/skipped/failed lifecycle.
 
 import (
+	"context"
 	"path"
 	"strings"
 	"sync"
 	"time"
 
+	"sb-ui/internal/executor"
 	"sb-ui/internal/store"
 )
 
 // Seams (overridden in tests).
 var (
-	autoscanScanFn    = func(cfg plexConfig, sectionID, plexPath string) error { return plexRefreshPath(cfg, sectionID, plexPath) }
-	autoscanSectionFn = plexSectionForPath
-	autoscanSaveFn    = func(f scanFile) { store.WriteJSON(autoscanScansRel, f) }
+	autoscanScanFn     = func(cfg plexConfig, sectionID, plexPath string) error { return plexRefreshPath(cfg, sectionID, plexPath) }
+	autoscanSectionFn  = plexSectionForPath
+	autoscanScanningFn = plexSectionScanning // is Plex still scanning this section?
+	autoscanAnchorFn   = anchorsPresent      // are all anchor files present (mount up)?
+	autoscanSaveFn     = func(f scanFile) { store.WriteJSON(autoscanScansRel, f) }
 )
+
+// anchorsPresent reports whether every configured anchor file exists (mount is up).
+// Returns the first missing one so the scan record can explain the hold.
+func anchorsPresent(anchors []string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	e := executor.Get()
+	for _, a := range anchors {
+		if a = strings.TrimSpace(a); a == "" {
+			continue
+		}
+		if ok, _ := e.FileExists(ctx, a); !ok {
+			return false, a
+		}
+	}
+	return true, ""
+}
 
 const (
 	autoscanScansRel = "cache/autoscan_scans.json"
@@ -256,10 +277,15 @@ func (s *autoscanService) fire(key string) {
 
 	s.setStatus(id, scanScanning, "", "", true)
 
-	s.sem <- struct{}{}
-	defer func() { <-s.sem }()
-
+	ac := loadOptions().Autoscan
 	cfg := loadOptions().Plex
+
+	// Hold the scan if the mount looks down (a required anchor file is missing) — a
+	// scan against a dropped mount can make Plex trash the whole library.
+	if ok, missing := autoscanAnchorFn(ac.Anchors); !ok {
+		s.setStatus(id, scanSkipped, "", "mount not ready — missing anchor: "+missing, false)
+		return
+	}
 	if cfg.URL == "" {
 		s.setStatus(id, scanFailed, "", "Plex not configured", false)
 		return
@@ -269,9 +295,52 @@ func (s *autoscanService) fire(key string) {
 		s.setStatus(id, scanSkipped, "", "no Plex section matches — add a path mapping", false)
 		return
 	}
-	if err := autoscanScanFn(cfg, secID, key); err != nil {
+
+	// Trigger the scan (bounded concurrency); release the slot before waiting.
+	s.sem <- struct{}{}
+	err := autoscanScanFn(cfg, secID, key)
+	<-s.sem
+	if err != nil {
 		s.setStatus(id, scanFailed, secID, err.Error(), false)
 		return
+	}
+	if !ac.WaitCompletion {
+		s.setStatus(id, scanCompleted, secID, "", false)
+		return
+	}
+	s.waitComplete(id, secID, cfg, ac) // poll Plex until it actually finishes
+}
+
+// waitComplete polls Plex /activities until the section's scan goes idle (or a
+// timeout), then marks the record completed. Runs in the fire() goroutine.
+func (s *autoscanService) waitComplete(id int64, secID string, cfg plexConfig, ac autoscanConfig) {
+	idle := time.Duration(ac.IdleSec) * time.Second
+	if idle < 10*time.Second {
+		idle = 30 * time.Second
+	}
+	timeout := time.Duration(ac.TimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 300 * time.Second
+	}
+	const grace = 20 * time.Second // if no scan activity ever appears, treat it as instant
+	start := time.Now()
+	deadline := start.Add(timeout)
+	lastActive := start
+	sawActive := false
+	tick := time.NewTicker(3 * time.Second)
+	defer tick.Stop()
+	for time.Now().Before(deadline) {
+		<-tick.C
+		if autoscanScanningFn(cfg, secID) {
+			sawActive, lastActive = true, time.Now()
+			continue
+		}
+		if sawActive && time.Since(lastActive) >= idle {
+			break
+		}
+		if !sawActive && time.Since(start) >= grace {
+			break
+		}
 	}
 	s.setStatus(id, scanCompleted, secID, "", false)
 }

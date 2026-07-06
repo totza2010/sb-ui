@@ -189,6 +189,35 @@ export function AutoscanPanel() {
                 </div>
               </div>
 
+              <div className="space-y-2 border-t border-border/60 pt-3">
+                <label className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-foreground">Wait for Plex to finish
+                    <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">Poll Plex so a scan shows <span className="text-foreground">Completed</span> only once Plex has actually finished (not just when triggered).</span>
+                  </span>
+                  <Switch checked={!!cfg.wait_completion} onCheckedChange={(v) => up('wait_completion', v)} />
+                </label>
+                {cfg.wait_completion && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Idle (seconds)</Label>
+                      <Input type="number" min={10} className="h-8" value={cfg.idle_sec || 30} onChange={(e) => up('idle_sec', Math.max(10, parseInt(e.target.value, 10) || 30))} />
+                      <p className="text-[10px] text-muted-foreground">No scan activity for this long = done.</p>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[11px]">Timeout (seconds)</Label>
+                      <Input type="number" min={30} className="h-8" value={cfg.timeout_sec || 300} onChange={(e) => up('timeout_sec', Math.max(30, parseInt(e.target.value, 10) || 300))} />
+                      <p className="text-[10px] text-muted-foreground">Give up waiting after this.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1 border-t border-border/60 pt-3">
+                <Label className="text-[11px]">Anchor files <span className="text-muted-foreground/70">(mount guard)</span></Label>
+                <PathList value={cfg.anchors ?? []} onChange={(v) => up('anchors', v)} multi disks={['/mnt/remote', '/mnt/unionfs', '/mnt/local']} placeholder="/mnt/remote/&lt;remote&gt;/mounted.bin" />
+                <p className="text-[10px] text-muted-foreground">Absolute files that must <span className="text-foreground">all</span> exist before scanning — add one per merged remote (browse <span className="font-mono">/mnt/remote/&lt;remote&gt;</span>). If any is missing that mount is treated as down and the scan is held, so Plex won't trash the library when an rclone mount drops.</p>
+              </div>
+
               <label className="flex items-center justify-between gap-3 border-t border-border/60 pt-3">
                 <span className="text-sm text-foreground">Log skipped webhooks
                   <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">Debug — also record events we don't scan (Grab, series-level rename, …) in the history, to see exactly what each *arr sends.</span>
@@ -311,9 +340,12 @@ function ExtSelect({ value, onChange }: { value: string[]; onChange: (v: string[
   )
 }
 
-// PathList — multiple filter paths: removable chips + manual entry + a folder picker
-// (browses the local/merged mounts, returns an absolute path).
-function PathList({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
+// PathList — multiple paths: removable chips + manual entry + a picker. Browses the
+// given host mounts; `multi` picks files (e.g. anchor files), else a folder.
+function PathList({ value, onChange, placeholder, disks, multi }: {
+  value: string[]; onChange: (v: string[]) => void; placeholder?: string
+  disks?: readonly string[]; multi?: boolean
+}) {
   const [pick, setPick] = useState(false)
   const [manual, setManual] = useState('')
   const add = (p: string) => { p = p.trim(); if (p && !value.includes(p)) onChange([...value, p]) }
@@ -334,9 +366,9 @@ function PathList({ value, onChange, placeholder }: { value: string[]; onChange:
         <Button size="sm" variant="outline" className="h-7 shrink-0 gap-1" onClick={() => setPick(true)}><FolderInput className="h-3.5 w-3.5" />Pick</Button>
       </div>
       {pick && (
-        <PathPicker mode="folder" disks={['/mnt/local']} hideRclone
+        <PathPicker mode={multi ? 'multi' : 'folder'} disks={disks ?? ['/mnt/local']} hideRclone
           onClose={() => setPick(false)}
-          onPick={(items) => { if (items[0]) add(items[0].path); setPick(false) }} />
+          onPick={(items) => { items.forEach((it) => add(it.path)); setPick(false) }} />
       )}
     </div>
   )

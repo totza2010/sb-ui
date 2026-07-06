@@ -210,6 +210,32 @@ func plexRefreshAll(cfg plexConfig) {
 	}
 }
 
+// plexSectionScanning reports whether Plex currently has a library scan running for
+// the section (or any library scan when Plex omits the section id). Used to detect
+// scan completion — GET /activities lists in-progress tasks.
+func plexSectionScanning(cfg plexConfig, sectionKey string) bool {
+	var r struct {
+		MediaContainer struct {
+			Activity []struct {
+				Type    string `json:"type"`
+				Context struct {
+					LibrarySectionID string `json:"librarySectionID"`
+				} `json:"Context"`
+			} `json:"Activity"`
+		} `json:"MediaContainer"`
+	}
+	if plexRawJSON(cfg, "/activities", &r) != nil {
+		return false
+	}
+	for _, a := range r.MediaContainer.Activity {
+		if strings.HasPrefix(a.Type, "library.") &&
+			(a.Context.LibrarySectionID == "" || a.Context.LibrarySectionID == sectionKey) {
+			return true
+		}
+	}
+	return false
+}
+
 // plexSectionForPath returns the section whose root location is the longest prefix
 // of the given (Plex-side) path.
 func plexSectionForPath(cfg plexConfig, p string) (string, bool) {
