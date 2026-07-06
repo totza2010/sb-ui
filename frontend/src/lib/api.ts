@@ -821,7 +821,7 @@ export const usePlexTest = () =>
 // by arr webhooks / manual triggers / post-upload. See docs/autoscan-plan.md.
 export interface AutoscanConfig { enabled: boolean; delay_sec: number; on_upload: boolean; webhook_token: string; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[] }
 export type ScanStatus = 'pending' | 'scanning' | 'completed' | 'skipped' | 'failed'
-export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; error?: string; created_at: string; started_at?: string; ended_at?: string }
+export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; event?: string; error?: string; created_at: string; started_at?: string; ended_at?: string }
 export interface AutoscanStatus { enabled: boolean; queued: number; counts: Record<ScanStatus, number>; scans: ScanRecord[]; port?: string }
 export const useAutoscanConfig = () =>
   useQuery<AutoscanConfig>({ queryKey: ['autoscan-config'], queryFn: () => request('/autoscan/config') })

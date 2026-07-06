@@ -11,8 +11,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { cn } from '@/lib/cn'
-import { ScanLine, Save, Copy, Check, RefreshCw, Play, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, Plus, X, FolderInput } from 'lucide-react'
+import { ScanLine, Save, Copy, Check, RefreshCw, Play, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, Plus, X, FolderInput, SlidersHorizontal } from 'lucide-react'
 import { PathPicker } from '@/components/PathPicker'
 
 const EMPTY: AutoscanConfig = { enabled: false, delay_sec: 5, on_upload: false, webhook_token: '' }
@@ -70,37 +71,105 @@ export function AutoscanPanel() {
             <p className="mt-0.5 text-sm text-muted-foreground">Built-in Plex partial-scan service — point Sonarr/Radarr here (or scan after uploads) to replace the external autoscan container.</p>
           </div>
         </div>
-        <Button size="sm" className="gap-1.5" onClick={doSave} disabled={save.isPending}><Save className="h-3.5 w-3.5" />{saved ? 'Saved ✓' : 'Save'}</Button>
+        <div className="flex items-center gap-2">
+          <span className={cn('flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium', cfg.enabled ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground')}>
+            <span className={cn('h-2 w-2 rounded-full', cfg.enabled ? 'bg-success' : 'bg-muted-foreground/50')} />{cfg.enabled ? 'Active' : 'Disabled'}
+          </span>
+          <Button size="sm" className="gap-1.5" onClick={doSave} disabled={save.isPending}><Save className="h-3.5 w-3.5" />{saved ? 'Saved ✓' : 'Save'}</Button>
+        </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* settings */}
-        <Card className="space-y-4 rounded-xl border-border/70 p-4 shadow-sm">
-          <label className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium text-foreground">Enable autoscan
-              <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">Master switch. Triggers do nothing while off.</span>
-            </span>
-            <Switch checked={cfg.enabled} onCheckedChange={(v) => up('enabled', v)} />
-          </label>
+      {/* stat cards — always visible (the working view) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Pending" value={counts.pending} tone="pending" />
+        <StatCard label="Scanning" value={counts.scanning} tone="scanning" />
+        <StatCard label="Completed" value={counts.completed} tone="completed" />
+        <StatCard label="Failed" value={counts.failed + counts.skipped} tone="failed" />
+      </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-[11px]">Debounce (seconds)</Label>
-              <Input type="number" min={1} className="h-8" value={cfg.delay_sec} onChange={(e) => up('delay_sec', Math.max(1, parseInt(e.target.value, 10) || 5))} />
-              <p className="text-[10px] text-muted-foreground">Wait this long, coalescing rapid events for the same folder into one scan.</p>
-            </div>
-            <div className="space-y-1">
-              <Label className="flex items-center gap-1 text-[11px]"><Zap className="h-3 w-3" />Scan after upload</Label>
-              <div className="flex h-8 items-center">
-                <Switch checked={cfg.on_upload} onCheckedChange={(v) => up('on_upload', v)} />
+      <Tabs defaultValue="activity" className="space-y-3">
+        <TabsList>
+          <TabsTrigger value="activity" className="gap-1.5"><ScanLine className="h-3.5 w-3.5" />Activity</TabsTrigger>
+          <TabsTrigger value="settings" className="gap-1.5"><SlidersHorizontal className="h-3.5 w-3.5" />Settings{!cfg.enabled && <span className="ml-0.5 rounded bg-warning/15 px-1 text-[10px] text-warning">off</span>}</TabsTrigger>
+        </TabsList>
+
+        {/* ── Activity ─────────────────────────────────────────────── */}
+        <TabsContent value="activity">
+          <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
+            {/* toolbar: filter + test-a-path + clear */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="inline-flex gap-0.5 rounded-lg border border-border bg-muted p-0.5">
+                {(['all', 'pending', 'scanning', 'completed', 'failed'] as const).map((f) => (
+                  <button key={f} onClick={() => setFilter(f)}
+                    className={cn('rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors', filter === f ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{f}</button>
+                ))}
               </div>
-              <p className="text-[10px] text-muted-foreground">When the Uploader moves files, scan the moved paths (needs a path mapping to the Plex side).</p>
+              <div className="flex items-center gap-1.5">
+                {!!status?.queued && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{status.queued} queued</span>}
+                <Input className="h-8 w-64 font-mono text-xs" value={testPath} onChange={(e) => setTestPath(e.target.value)} placeholder="/mnt/unionfs/Media/… — scan now" onKeyDown={(e) => e.key === 'Enter' && runTest()} />
+                <Button size="sm" variant="outline" className="gap-1.5" onClick={runTest} disabled={trigger.isPending || !testPath.trim()}>
+                  {trigger.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}Scan
+                </Button>
+                <Button size="icon" variant="ghost" className="h-8 w-8" title="Clear history" disabled={rows.length === 0} onClick={() => clear.mutate(undefined, { onSuccess: () => qc.invalidateQueries({ queryKey: ['autoscan-status'] }) })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
+              </div>
             </div>
-          </div>
-        </Card>
 
-        {/* webhook */}
-        <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
+            {/* table */}
+            <div className="overflow-hidden rounded-md border border-border">
+              <div className="flex items-center gap-3 border-b border-border bg-secondary/30 px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                <span className="min-w-0 flex-1">Mapped path</span>
+                <span className="w-28 shrink-0">Trigger</span>
+                <span className="w-28 shrink-0">Status</span>
+                <span className="w-32 shrink-0 text-right">Created</span>
+              </div>
+              <div className="max-h-[52vh] divide-y divide-border overflow-y-auto">
+                {rows.length === 0 && <div className="px-4 py-10 text-center text-xs text-muted-foreground">No scans found. Trigger one below, wire an *arr webhook (Settings tab), or enable scan-after-upload.</div>}
+                {rows.map((r) => (
+                  <div key={r.id} className="flex items-center gap-3 px-3 py-1.5 text-sm">
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={r.error || r.path}>{r.path}{r.section && <span className="text-muted-foreground/70"> §{r.section}</span>}</span>
+                    <span className="flex w-28 shrink-0 items-center gap-1.5">
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{r.source || '—'}</span>
+                      {r.event && <span className="truncate text-[10px] text-muted-foreground/70">{r.event}</span>}
+                    </span>
+                    <span className="w-28 shrink-0"><StatusPill status={r.status} error={r.error} /></span>
+                    <span className="w-32 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </Card>
+        </TabsContent>
+
+        {/* ── Settings ─────────────────────────────────────────────── */}
+        <TabsContent value="settings" className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* general */}
+            <Card className="space-y-4 rounded-xl border-border/70 p-4 shadow-sm">
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-sm font-medium text-foreground">Enable autoscan
+                  <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">Master switch — arr webhooks &amp; scan-after-upload do nothing while off (the manual “Scan now” box still works for testing).</span>
+                </span>
+                <Switch checked={cfg.enabled} onCheckedChange={(v) => up('enabled', v)} />
+              </label>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Debounce (seconds)</Label>
+                  <Input type="number" min={1} className="h-8" value={cfg.delay_sec} onChange={(e) => up('delay_sec', Math.max(1, parseInt(e.target.value, 10) || 5))} />
+                  <p className="text-[10px] text-muted-foreground">Wait this long, coalescing rapid events for the same folder into one scan.</p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="flex items-center gap-1 text-[11px]"><Zap className="h-3 w-3" />Scan after upload</Label>
+                  <div className="flex h-8 items-center">
+                    <Switch checked={cfg.on_upload} onCheckedChange={(v) => up('on_upload', v)} />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">When the Uploader moves files, scan the moved paths (needs a path mapping to the Plex side).</p>
+                </div>
+              </div>
+            </Card>
+
+            {/* webhook */}
+            <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
           <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Sonarr / Radarr webhook</p>
           <p className="text-[11px] text-muted-foreground">In each *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, tick On Import / On Rename / On Upgrade, then paste a URL below. These hit sb-ui's port <span className="font-mono text-foreground">:{port}</span> directly (skips the Traefik/Authelia front).</p>
 
@@ -151,56 +220,8 @@ export function AutoscanPanel() {
           </div>
         </div>
       </Card>
-
-      {/* scan history */}
-      <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
-        {/* stat cards */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <StatCard label="Pending" value={counts.pending} tone="pending" />
-          <StatCard label="Scanning" value={counts.scanning} tone="scanning" />
-          <StatCard label="Completed" value={counts.completed} tone="completed" />
-          <StatCard label="Failed" value={counts.failed + counts.skipped} tone="failed" />
-        </div>
-
-        {/* toolbar: filter + test-a-path + clear */}
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="inline-flex gap-0.5 rounded-lg border border-border bg-muted p-0.5">
-            {(['all', 'pending', 'scanning', 'completed', 'failed'] as const).map((f) => (
-              <button key={f} onClick={() => setFilter(f)}
-                className={cn('rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors', filter === f ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{f}</button>
-            ))}
-          </div>
-          <div className="flex items-center gap-1.5">
-            {!!status?.queued && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{status.queued} queued</span>}
-            <Input className="h-8 w-64 font-mono text-xs" value={testPath} onChange={(e) => setTestPath(e.target.value)} placeholder="/mnt/unionfs/Media/… — scan now" onKeyDown={(e) => e.key === 'Enter' && runTest()} />
-            <Button size="sm" variant="outline" className="gap-1.5" onClick={runTest} disabled={trigger.isPending || !testPath.trim()}>
-              {trigger.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}Scan
-            </Button>
-            <Button size="icon" variant="ghost" className="h-8 w-8" title="Clear history" disabled={rows.length === 0} onClick={() => clear.mutate(undefined, { onSuccess: () => qc.invalidateQueries({ queryKey: ['autoscan-status'] }) })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
-          </div>
-        </div>
-
-        {/* table */}
-        <div className="overflow-hidden rounded-md border border-border">
-          <div className="flex items-center gap-3 border-b border-border bg-secondary/30 px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-            <span className="min-w-0 flex-1">Mapped path</span>
-            <span className="w-20 shrink-0">Trigger</span>
-            <span className="w-28 shrink-0">Status</span>
-            <span className="w-32 shrink-0 text-right">Created</span>
-          </div>
-          <div className="max-h-[44vh] divide-y divide-border overflow-y-auto">
-            {rows.length === 0 && <div className="px-4 py-10 text-center text-xs text-muted-foreground">No scans found. Trigger one above, wire an *arr webhook, or enable scan-after-upload.</div>}
-            {rows.map((r) => (
-              <div key={r.id} className="flex items-center gap-3 px-3 py-1.5 text-sm">
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={r.error || r.path}>{r.path}{r.section && <span className="text-muted-foreground/70"> §{r.section}</span>}</span>
-                <span className="w-20 shrink-0"><span className="rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{r.source || '—'}</span></span>
-                <span className="w-28 shrink-0"><StatusPill status={r.status} error={r.error} /></span>
-                <span className="w-32 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }

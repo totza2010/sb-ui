@@ -42,7 +42,8 @@ type scanRecord struct {
 	Path      string     `json:"path"`    // mapped Plex-side folder that gets scanned
 	Section   string     `json:"section"` // Plex library section key
 	Status    scanStatus `json:"status"`
-	Source    string     `json:"source"` // webhook / manual / upload
+	Source    string     `json:"source"`          // sonarr / radarr / manual / upload
+	Event     string     `json:"event,omitempty"` // arr eventType (Download, Rename, …)
 	Error     string     `json:"error,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
@@ -172,7 +173,7 @@ func (s *autoscanService) snapshotLocked() scanFile {
 
 // Enqueue schedules a debounced scan for each raw path; rapid duplicates for the
 // same target folder collapse into one pending record. Returns how many were accepted.
-func (s *autoscanService) Enqueue(source string, raws ...string) int {
+func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 	delay := autoscanDelay()
 	ac := loadOptions().Autoscan
 	n := 0
@@ -193,7 +194,7 @@ func (s *autoscanService) Enqueue(source string, raws ...string) int {
 			continue
 		}
 		s.nextID++
-		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, CreatedAt: time.Now()}}, s.records...)
+		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, Event: event, CreatedAt: time.Now()}}, s.records...)
 		if len(s.records) > autoscanScansMax {
 			s.records = s.records[:autoscanScansMax]
 		}

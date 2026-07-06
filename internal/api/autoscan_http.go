@@ -7,9 +7,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
-	"path"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -40,7 +40,7 @@ func autoscanTrigger(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "paths required", http.StatusBadRequest)
 		return
 	}
-	n := autoscanSvc().Enqueue("manual", b.Paths...)
+	n := autoscanSvc().Enqueue("manual", "", b.Paths...)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": n})
 }
 
@@ -71,63 +71,38 @@ func autoscanWebhook(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	// Mirrors Cloudbox/autoscan's Sonarr + Radarr triggers: the file's folder is
-	// series.path/movie.folderPath joined with the file's relativePath (plexScanKey
-	// then collapses a file to its directory).
-	var b struct {
+	body, _ := io.ReadAll(req.Body)
+
+	var meta struct {
 		EventType string   `json:"eventType"`
 		Paths     []string `json:"paths"` // generic caller
-		Series    struct {
-			Path string `json:"path"`
-		} `json:"series"`
-		EpisodeFile struct {
-			RelativePath string `json:"relativePath"`
-		} `json:"episodeFile"`
-		RenamedEpisodeFiles []struct {
-			PreviousPath string `json:"previousPath"`
-			RelativePath string `json:"relativePath"`
-		} `json:"renamedEpisodeFiles"`
-		Movie struct {
-			FolderPath string `json:"folderPath"`
-		} `json:"movie"`
-		MovieFile struct {
-			RelativePath string `json:"relativePath"`
-		} `json:"movieFile"`
 	}
-	_ = json.NewDecoder(req.Body).Decode(&b)
+	_ = json.Unmarshal(body, &meta)
 
-	if strings.EqualFold(b.EventType, "Test") { // Sonarr/Radarr "Test" button — just needs a 2xx
+	if strings.EqualFold(meta.EventType, "Test") { // arr "Test" button — just needs a 2xx
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "test": true})
 		return
 	}
 
-	paths := append([]string{}, b.Paths...)
-	// Sonarr
-	if b.Series.Path != "" {
-		if b.EpisodeFile.RelativePath != "" {
-			paths = append(paths, path.Join(b.Series.Path, b.EpisodeFile.RelativePath))
-		} else {
-			paths = append(paths, b.Series.Path)
-		}
-		for _, rf := range b.RenamedEpisodeFiles {
-			if rf.PreviousPath != "" {
-				paths = append(paths, rf.PreviousPath)
-			}
-			if rf.RelativePath != "" {
-				paths = append(paths, path.Join(b.Series.Path, rf.RelativePath))
-			}
-		}
-	}
-	// Radarr
-	if b.Movie.FolderPath != "" {
-		if b.MovieFile.RelativePath != "" {
-			paths = append(paths, path.Join(b.Movie.FolderPath, b.MovieFile.RelativePath))
-		} else {
-			paths = append(paths, b.Movie.FolderPath)
-		}
+	// Master switch: acknowledge the webhook but don't scan while autoscan is off.
+	// (The manual "Scan now" box stays usable so config can be tested.)
+	if !ac.Enabled {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": 0, "disabled": true})
+		return
 	}
 
-	n := autoscanSvc().Enqueue("webhook", paths...)
+	// Detect the *arr and extract the folders to scan (per-app parsers in autoscan_arr.go).
+	scan, _ := parseArrWebhook(body)
+	source := "webhook"
+	if scan.Source != "" {
+		source = scan.Source
+	}
+	paths := append(append([]string{}, meta.Paths...), scan.Paths...)
+	if len(paths) == 0 { // unknown app or an event we don't scan on — acknowledge, do nothing
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": 0, "ignored": meta.EventType})
+		return
+	}
+	n := autoscanSvc().Enqueue(source, scan.Event, paths...)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": n})
 }
 

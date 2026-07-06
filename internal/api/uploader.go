@@ -734,7 +734,7 @@ func uploaderCheck() {
 			for _, it := range items {
 				paths = append(paths, it.Path)
 			}
-			autoscanSvc().Enqueue("upload", paths...)
+			autoscanSvc().Enqueue("upload", "", paths...)
 		}
 	}
 

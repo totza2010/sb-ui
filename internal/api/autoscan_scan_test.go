@@ -77,9 +77,9 @@ func TestAutoscanCoalesce(t *testing.T) {
 	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600}})
 	s := newAutoscanService()
 
-	s.Enqueue("webhook", "/m/TV/Show/a.mkv", "/m/TV/Show/b.mkv") // same folder → 1 record
-	s.Enqueue("webhook", "/m/Movies/Film")                       // distinct → 2nd record
-	s.Enqueue("webhook", "/m/TV/Show/c.mkv")                     // same folder again → still 2
+	s.Enqueue("webhook", "", "/m/TV/Show/a.mkv", "/m/TV/Show/b.mkv") // same folder → 1 record
+	s.Enqueue("webhook", "", "/m/Movies/Film")                       // distinct → 2nd record
+	s.Enqueue("webhook", "", "/m/TV/Show/c.mkv")                     // same folder again → still 2
 
 	if d := s.queueDepth(); d != 2 {
 		t.Fatalf("queueDepth = %d, want 2 (coalesced)", d)
@@ -103,7 +103,7 @@ func TestAutoscanFireCompleted(t *testing.T) {
 	t.Cleanup(func() { autoscanScanFn, autoscanSectionFn = prevScan, prevSection })
 
 	s := newAutoscanService()
-	s.Enqueue("manual", "/mnt/unionfs/Media/TV/Show/ep.mkv")
+	s.Enqueue("manual", "", "/mnt/unionfs/Media/TV/Show/ep.mkv")
 	key := plexScanKey("/mnt/unionfs/Media/TV/Show/ep.mkv")
 	s.fire(key)
 
@@ -127,7 +127,7 @@ func TestAutoscanFireSkipped(t *testing.T) {
 	t.Cleanup(func() { autoscanSectionFn = prev })
 
 	s := newAutoscanService()
-	s.Enqueue("webhook", "/unmapped/path")
+	s.Enqueue("webhook", "", "/unmapped/path")
 	s.fire(plexScanKey("/unmapped/path"))
 
 	if recs := s.recentScans(); len(recs) != 1 || recs[0].Status != scanSkipped {
@@ -161,8 +161,41 @@ func TestAutoscanEnqueueFilter(t *testing.T) {
 	noPersist(t)
 	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600, ExcludeExts: []string{"nfo"}}})
 	s := newAutoscanService()
-	if n := s.Enqueue("webhook", "/m/Show/ep.mkv", "/m/Show/ep.nfo"); n != 1 {
+	if n := s.Enqueue("webhook", "", "/m/Show/ep.mkv", "/m/Show/ep.nfo"); n != 1 {
 		t.Fatalf("Enqueue accepted %d, want 1 (.nfo filtered)", n)
+	}
+}
+
+func TestParseArrWebhook(t *testing.T) {
+	cases := []struct {
+		name, body, wantSource string
+		wantPath               string // first scan path (empty = no match / no scan)
+	}{
+		{"sonarr download", `{"eventType":"Download","series":{"path":"/tv/Show"},"episodeFile":{"relativePath":"Season 1/ep.mkv"}}`, "sonarr", "/tv/Show/Season 1/ep.mkv"},
+		{"radarr download", `{"eventType":"Download","movie":{"folderPath":"/movies/Film (2020)"},"movieFile":{"relativePath":"Film.mkv"}}`, "radarr", "/movies/Film (2020)/Film.mkv"},
+		{"sonarr seriesdelete", `{"eventType":"SeriesDelete","series":{"path":"/tv/Show"}}`, "sonarr", "/tv/Show"},
+		{"lidarr download", `{"eventType":"Download","artist":{"path":"/music/Artist"},"trackFiles":[{"path":"/music/Artist/Album/t.flac"}]}`, "lidarr", "/music/Artist/Album/t.flac"},
+		{"sonarr grab (no scan)", `{"eventType":"Grab","series":{"path":"/tv/Show"}}`, "sonarr", ""},
+		{"unknown", `{"eventType":"Download","foo":{"bar":1}}`, "", ""},
+	}
+	for _, c := range cases {
+		s, ok := parseArrWebhook([]byte(c.body))
+		if c.wantSource == "" {
+			if ok {
+				t.Errorf("%s: expected no match, got %+v", c.name, s)
+			}
+			continue
+		}
+		if !ok || s.Source != c.wantSource {
+			t.Errorf("%s: source = %q (ok=%v), want %q", c.name, s.Source, ok, c.wantSource)
+		}
+		got := ""
+		if len(s.Paths) > 0 {
+			got = s.Paths[0]
+		}
+		if got != c.wantPath {
+			t.Errorf("%s: path = %q, want %q", c.name, got, c.wantPath)
+		}
 	}
 }
 
@@ -170,7 +203,7 @@ func TestAutoscanEnqueueCount(t *testing.T) {
 	noPersist(t)
 	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600}})
 	s := newAutoscanService()
-	if n := s.Enqueue("manual", "/m/A/x.mkv", "", "/m/B"); n != 2 {
+	if n := s.Enqueue("manual", "", "/m/A/x.mkv", "", "/m/B"); n != 2 {
 		t.Fatalf("Enqueue accepted %d, want 2 (blank skipped)", n)
 	}
 }
