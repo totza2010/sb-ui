@@ -38,6 +38,15 @@ const (
 	scanIgnored   scanStatus = "ignored" // webhook received but not scanned (debug log)
 )
 
+// scanHit is one webhook/trigger that fed a scan record — several can coalesce into
+// one scan, so this preserves what each *arr actually sent.
+type scanHit struct {
+	Time   time.Time `json:"time"`
+	Source string    `json:"source"`
+	Event  string    `json:"event,omitempty"`
+	Path   string    `json:"path"` // the raw path the caller sent (before rewrite/collapse)
+}
+
 type scanRecord struct {
 	ID        int64      `json:"id"`
 	Path      string     `json:"path"`    // mapped Plex-side folder that gets scanned
@@ -46,6 +55,7 @@ type scanRecord struct {
 	Source    string     `json:"source"`          // sonarr / radarr / manual / upload
 	Event     string     `json:"event,omitempty"` // arr eventType (Download, Rename, …)
 	Error     string     `json:"error,omitempty"`
+	Hits      []scanHit  `json:"hits,omitempty"` // the events that fed this scan
 	CreatedAt time.Time  `json:"created_at"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
@@ -177,6 +187,7 @@ func (s *autoscanService) snapshotLocked() scanFile {
 func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 	delay := autoscanDelay()
 	ac := loadOptions().Autoscan
+	now := time.Now()
 	n := 0
 	s.mu.Lock()
 	for _, raw := range raws {
@@ -188,14 +199,21 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 			continue
 		}
 		n++
-		if _, ok := s.active[key]; ok { // already queued for this folder → extend debounce
+		hit := scanHit{Time: now, Source: source, Event: event, Path: raw}
+		if id, ok := s.active[key]; ok { // already queued for this folder → record the hit + extend debounce
+			for i := range s.records {
+				if s.records[i].ID == id {
+					s.records[i].Hits = append(s.records[i].Hits, hit)
+					break
+				}
+			}
 			if t := s.timers[key]; t != nil {
 				t.Reset(delay)
 			}
 			continue
 		}
 		s.nextID++
-		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, Event: event, CreatedAt: time.Now()}}, s.records...)
+		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, Event: event, Hits: []scanHit{hit}, CreatedAt: now}}, s.records...)
 		if len(s.records) > autoscanScansMax {
 			s.records = s.records[:autoscanScansMax]
 		}
@@ -214,9 +232,10 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 // LogIgnored records a webhook event we received but chose not to scan (for the
 // debug "log skipped" view — no timer, no scan). ref = the folder the *arr sent.
 func (s *autoscanService) LogIgnored(source, event, ref, note string) {
+	now := time.Now()
 	s.mu.Lock()
 	s.nextID++
-	s.records = append([]scanRecord{{ID: s.nextID, Path: ref, Status: scanIgnored, Source: source, Event: event, Error: note, CreatedAt: time.Now()}}, s.records...)
+	s.records = append([]scanRecord{{ID: s.nextID, Path: ref, Status: scanIgnored, Source: source, Event: event, Error: note, Hits: []scanHit{{Time: now, Source: source, Event: event, Path: ref}}, CreatedAt: now}}, s.records...)
 	if len(s.records) > autoscanScansMax {
 		s.records = s.records[:autoscanScansMax]
 	}

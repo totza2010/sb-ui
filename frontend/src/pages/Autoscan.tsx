@@ -13,7 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { cn } from '@/lib/cn'
-import { ScanLine, Save, Copy, Check, RefreshCw, Play, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, Plus, X, FolderInput, SlidersHorizontal } from 'lucide-react'
+import { ScanLine, Save, Copy, Check, RefreshCw, Play, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, ChevronRight, Plus, X, FolderInput, SlidersHorizontal } from 'lucide-react'
 import { PathPicker } from '@/components/PathPicker'
 
 const EMPTY: AutoscanConfig = { enabled: false, delay_sec: 5, on_upload: false, webhook_token: '' }
@@ -35,6 +35,7 @@ export function AutoscanPanel() {
   const [saved, setSaved] = useState(false)
   const [testPath, setTestPath] = useState('')
   const [filter, setFilter] = useState<'all' | ScanStatus>('all')
+  const [openRows, setOpenRows] = useState<Record<number, boolean>>({})
 
   useEffect(() => { if (data) setCfg({ ...EMPTY, ...data }) }, [data])
 
@@ -117,24 +118,45 @@ export function AutoscanPanel() {
             {/* table */}
             <div className="overflow-hidden rounded-md border border-border">
               <div className="flex items-center gap-3 border-b border-border bg-secondary/30 px-3 py-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                <span className="w-3.5 shrink-0" />
                 <span className="min-w-0 flex-1">Mapped path</span>
-                <span className="w-28 shrink-0">Trigger</span>
+                <span className="w-32 shrink-0">Trigger</span>
                 <span className="w-28 shrink-0">Status</span>
                 <span className="w-32 shrink-0 text-right">Created</span>
               </div>
               <div className="max-h-[52vh] divide-y divide-border overflow-y-auto">
                 {rows.length === 0 && <div className="px-4 py-10 text-center text-xs text-muted-foreground">No scans found. Trigger one below, wire an *arr webhook (Settings tab), or enable scan-after-upload.</div>}
-                {rows.map((r) => (
-                  <div key={r.id} className="flex items-center gap-3 px-3 py-1.5 text-sm">
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={r.error || r.path}>{r.path}{r.section && <span className="text-muted-foreground/70"> §{r.section}</span>}</span>
-                    <span className="flex w-28 shrink-0 items-center gap-1.5">
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{r.source || '—'}</span>
-                      {r.event && <span className="truncate text-[10px] text-muted-foreground/70">{r.event}</span>}
-                    </span>
-                    <span className="w-28 shrink-0"><StatusPill status={r.status} error={r.error} /></span>
-                    <span className="w-32 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-                  </div>
-                ))}
+                {rows.map((r) => {
+                  const hits = r.hits ?? []
+                  const open = !!openRows[r.id]
+                  return (
+                    <div key={r.id}>
+                      <div className={cn('flex items-center gap-3 px-3 py-1.5 text-sm', hits.length > 0 && 'cursor-pointer hover:bg-muted/40')} onClick={() => hits.length > 0 && setOpenRows((o) => ({ ...o, [r.id]: !o[r.id] }))}>
+                        <span className="w-3.5 shrink-0 text-muted-foreground">{hits.length > 0 && (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />)}</span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={r.error || r.path}>{r.path}{r.section && <span className="text-muted-foreground/70"> §{r.section}</span>}</span>
+                        <span className="flex w-32 shrink-0 items-center gap-1.5">
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{r.source || '—'}</span>
+                          {r.event && <span className="truncate text-[10px] text-muted-foreground/70">{r.event}</span>}
+                          {hits.length > 1 && <span className="shrink-0 rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">×{hits.length}</span>}
+                        </span>
+                        <span className="w-28 shrink-0"><StatusPill status={r.status} error={r.error} /></span>
+                        <span className="w-32 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      {open && hits.length > 0 && (
+                        <div className="space-y-1 border-t border-border/50 bg-secondary/20 px-3 py-2 pl-8">
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Webhook events ({hits.length})</p>
+                          {hits.map((h, i) => (
+                            <div key={i} className="flex items-center gap-2 text-[11px]">
+                              <span className="w-16 shrink-0 tabular-nums text-muted-foreground/70">{new Date(h.time).toLocaleTimeString()}</span>
+                              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{h.source}{h.event ? ` · ${h.event}` : ''}</span>
+                              <span className="min-w-0 flex-1 truncate font-mono text-foreground/80" title={h.path}>{h.path}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </Card>
