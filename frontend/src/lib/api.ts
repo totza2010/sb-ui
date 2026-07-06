@@ -1,4 +1,4 @@
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 const BASE = '/api'
 
@@ -250,11 +250,14 @@ export const useSaltboxUpdate = () =>
   })
 
 // ── sb-ui self-update ────────────────────────────────────────────────────────
+export type UpdateChannel = 'stable' | 'nightly'
+
 export interface SelfVersion {
   current: string
   latest: string
   update_available: boolean
   asset: string
+  channel: UpdateChannel
   asset_url?: string
   release_url?: string
   note?: string
@@ -271,6 +274,15 @@ export const useSelfUpdate = () =>
   useMutation<{ job_id: string }, Error, void>({
     mutationFn: () => request('/self/update', { method: 'POST' }),
   })
+
+export const useSetUpdateChannel = () => {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean; channel: UpdateChannel }, Error, UpdateChannel>({
+    mutationFn: (channel) =>
+      request('/self/channel', { method: 'PUT', body: JSON.stringify({ channel }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['self-version'] }),
+  })
+}
 
 export const useApplyPatches = () =>
   useMutation<{ job_id: string }, Error, void>({

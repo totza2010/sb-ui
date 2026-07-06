@@ -28,6 +28,7 @@ func Mount(r chi.Router) {
 	// Self-update (sb-ui's own binary)
 	r.Get("/api/self/version", selfVersion)
 	r.Post("/api/self/update", selfUpdate)
+	r.Put("/api/self/channel", selfSetChannel)
 
 	r.Get("/api/jobs", listJobs)
 	r.Post("/api/jobs/clear", clearJobs)

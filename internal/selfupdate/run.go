@@ -17,7 +17,7 @@ import (
 // atomically swap the running binary, then re-exec. On success the process is
 // replaced and never returns; the job log is persisted before the swap so the
 // frontend sees it after reconnecting to the new version.
-func Run(jobID string) {
+func Run(jobID, channel string) {
 	jobs.SetStatus(jobID, "running")
 	log := func(s string) { jobs.PushLog(jobID, s) }
 	fail := func(format string, a ...any) {
@@ -33,8 +33,8 @@ func Run(jobID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	log("Checking latest release…")
-	info := Check(ctx)
+	log("Checking " + channel + " release…")
+	info := Check(ctx, channel)
 	if info.Note != "" {
 		log(info.Note)
 	}

@@ -195,15 +195,33 @@ func (s *autoscanService) Pause() {
 	s.mu.Unlock()
 }
 
-// Resume releases the hold and fires every queued scan.
+// Resume releases the hold and restarts each queued scan's countdown — a fresh
+// debounce, staggered by the scan gap — so after an unpause the rows visibly count
+// down again and fire one at a time instead of all scanning at once.
 func (s *autoscanService) Resume() {
+	delay := autoscanDelay()
+	gap := autoscanGapFn()
+	now := time.Now()
 	s.mu.Lock()
 	s.paused = false
+	i := 0
 	for key := range s.active {
+		wait := delay + time.Duration(i)*gap
+		fireAt := now.Add(wait)
+		id := s.active[key]
+		for j := range s.records {
+			if s.records[j].ID == id {
+				s.records[j].FireAt = &fireAt
+				break
+			}
+		}
 		k := key
-		s.timers[k] = time.AfterFunc(0, func() { s.fire(k) })
+		s.timers[k] = time.AfterFunc(wait, func() { s.fire(k) })
+		i++
 	}
+	snap := s.snapshotLocked()
 	s.mu.Unlock()
+	autoscanSaveFn(snap)
 }
 
 func (s *autoscanService) isPaused() bool {

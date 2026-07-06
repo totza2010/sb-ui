@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { ArrowUpCircle, Loader2 } from 'lucide-react'
-import { useSelfVersion, useSelfUpdate } from '@/lib/api'
+import { useSelfVersion, useSelfUpdate, useSetUpdateChannel, type UpdateChannel } from '@/lib/api'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { LogStream } from '@/components/LogStream'
 
@@ -10,8 +10,14 @@ import { LogStream } from '@/components/LogStream'
 export function SelfUpdate() {
   const { data, refetch } = useSelfVersion()
   const update = useSelfUpdate()
+  const setChannel = useSetUpdateChannel()
   const [jobId, setJobId] = useState<string | null>(null)
   const prevVersion = useRef<string | null>(null)
+
+  const pickChannel = (ch: UpdateChannel) => {
+    if (ch === data?.channel || setChannel.isPending) return
+    setChannel.mutate(ch)
+  }
 
   const start = async () => {
     prevVersion.current = data?.current ?? null
@@ -48,6 +54,25 @@ export function SelfUpdate() {
         sb-ui {data.current}
         {data.update_available && <span className="text-orange-500"> → {data.latest}</span>}
       </p>
+
+      {/* stable vs nightly (master) update channel */}
+      <div className="inline-flex rounded-md border border-border p-0.5 text-[11px]">
+        {(['stable', 'nightly'] as const).map((ch) => (
+          <button
+            key={ch}
+            onClick={() => pickChannel(ch)}
+            disabled={setChannel.isPending}
+            className={
+              'rounded px-1.5 py-0.5 capitalize transition-colors disabled:opacity-60 ' +
+              (data.channel === ch
+                ? 'bg-foreground text-background'
+                : 'text-muted-foreground hover:text-foreground')
+            }
+          >
+            {ch}
+          </button>
+        ))}
+      </div>
 
       {data.update_available && (
         <button
