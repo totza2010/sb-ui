@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -36,7 +38,9 @@ func webhookAuthorized(req *http.Request, token string) bool {
 	if token == "" {
 		return false
 	}
-	if chi.URLParam(req, "token") == token || req.Header.Get("X-API-Key") == token || req.URL.Query().Get("apikey") == token {
+	if chi.URLParam(req, "token") == token ||
+		req.Header.Get("X-API-Key") == token || req.Header.Get("Apikey") == token ||
+		req.URL.Query().Get("apikey") == token {
 		return true
 	}
 	if _, pass, ok := req.BasicAuth(); ok && pass == token {
@@ -51,28 +55,62 @@ func autoscanWebhook(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	// Mirrors Cloudbox/autoscan's Sonarr + Radarr triggers: the file's folder is
+	// series.path/movie.folderPath joined with the file's relativePath (plexScanKey
+	// then collapses a file to its directory).
 	var b struct {
 		EventType string   `json:"eventType"`
-		Paths     []string `json:"paths"`
+		Paths     []string `json:"paths"` // generic caller
 		Series    struct {
 			Path string `json:"path"`
 		} `json:"series"`
+		EpisodeFile struct {
+			RelativePath string `json:"relativePath"`
+		} `json:"episodeFile"`
+		RenamedEpisodeFiles []struct {
+			PreviousPath string `json:"previousPath"`
+			RelativePath string `json:"relativePath"`
+		} `json:"renamedEpisodeFiles"`
 		Movie struct {
 			FolderPath string `json:"folderPath"`
 		} `json:"movie"`
+		MovieFile struct {
+			RelativePath string `json:"relativePath"`
+		} `json:"movieFile"`
 	}
 	_ = json.NewDecoder(req.Body).Decode(&b)
-	if b.EventType == "Test" { // Sonarr/Radarr "Test" button
+
+	if strings.EqualFold(b.EventType, "Test") { // Sonarr/Radarr "Test" button — just needs a 2xx
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "test": true})
 		return
 	}
+
 	paths := append([]string{}, b.Paths...)
+	// Sonarr
 	if b.Series.Path != "" {
-		paths = append(paths, b.Series.Path)
+		if b.EpisodeFile.RelativePath != "" {
+			paths = append(paths, path.Join(b.Series.Path, b.EpisodeFile.RelativePath))
+		} else {
+			paths = append(paths, b.Series.Path)
+		}
+		for _, rf := range b.RenamedEpisodeFiles {
+			if rf.PreviousPath != "" {
+				paths = append(paths, rf.PreviousPath)
+			}
+			if rf.RelativePath != "" {
+				paths = append(paths, path.Join(b.Series.Path, rf.RelativePath))
+			}
+		}
 	}
+	// Radarr
 	if b.Movie.FolderPath != "" {
-		paths = append(paths, b.Movie.FolderPath)
+		if b.MovieFile.RelativePath != "" {
+			paths = append(paths, path.Join(b.Movie.FolderPath, b.MovieFile.RelativePath))
+		} else {
+			paths = append(paths, b.Movie.FolderPath)
+		}
 	}
+
 	n := autoscanSvc().Enqueue("webhook", paths...)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": n})
 }
