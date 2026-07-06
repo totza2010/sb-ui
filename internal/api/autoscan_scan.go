@@ -24,6 +24,13 @@ var (
 	autoscanScanningFn = plexSectionScanning // is Plex still scanning this section?
 	autoscanAnchorFn   = anchorsPresent      // are all anchor files present (mount up)?
 	autoscanSaveFn     = func(f scanFile) { store.WriteJSON(autoscanScansRel, f) }
+	autoscanGapFn      = func() time.Duration { // min gap between scans (rate limit)
+		g := loadOptions().Autoscan.ScanGapSec
+		if g <= 0 {
+			g = 3
+		}
+		return time.Duration(g) * time.Second
+	}
 )
 
 // anchorsPresent reports whether every configured anchor file exists (mount is up).
@@ -76,7 +83,8 @@ type scanRecord struct {
 	Source    string     `json:"source"`          // sonarr / radarr / manual / upload
 	Event     string     `json:"event,omitempty"` // arr eventType (Download, Rename, …)
 	Error     string     `json:"error,omitempty"`
-	Hits      []scanHit  `json:"hits,omitempty"` // the events that fed this scan
+	Hits      []scanHit  `json:"hits,omitempty"`    // the events that fed this scan
+	FireAt    *time.Time `json:"fire_at,omitempty"` // when the debounce elapses and it scans
 	CreatedAt time.Time  `json:"created_at"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
@@ -152,7 +160,56 @@ type autoscanService struct {
 	active  map[string]int64 // key → id of the record currently pending/scanning
 	records []scanRecord     // newest first, bounded
 	nextID  int64
+	paused  bool // held (e.g. during an upload); pending scans wait for Resume
 	sem     chan struct{}
+
+	gate       sync.Mutex // serialises scans so a drained queue doesn't hammer Plex
+	nextScanAt time.Time
+}
+
+// throttle blocks until the min gap since the previous scan has elapsed. Holding the
+// gate while sleeping serialises callers, so a burst (or a queue released by Resume)
+// drains one scan per gap instead of all at once.
+func (s *autoscanService) throttle() {
+	gap := autoscanGapFn()
+	if gap <= 0 {
+		return
+	}
+	s.gate.Lock()
+	defer s.gate.Unlock()
+	if wait := time.Until(s.nextScanAt); wait > 0 {
+		time.Sleep(wait)
+	}
+	s.nextScanAt = time.Now().Add(gap)
+}
+
+// Pause holds the scan queue — pending scans stay pending and new triggers still
+// queue, but nothing is sent to Plex until Resume. Used by the uploader to stop
+// autoscan from scanning a folder that's mid-move (in-memory; a restart clears it).
+func (s *autoscanService) Pause() {
+	s.mu.Lock()
+	s.paused = true
+	for _, t := range s.timers {
+		t.Stop()
+	}
+	s.mu.Unlock()
+}
+
+// Resume releases the hold and fires every queued scan.
+func (s *autoscanService) Resume() {
+	s.mu.Lock()
+	s.paused = false
+	for key := range s.active {
+		k := key
+		s.timers[k] = time.AfterFunc(0, func() { s.fire(k) })
+	}
+	s.mu.Unlock()
+}
+
+func (s *autoscanService) isPaused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.paused
 }
 
 func newAutoscanService() *autoscanService {
@@ -209,6 +266,7 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 	delay := autoscanDelay()
 	ac := loadOptions().Autoscan
 	now := time.Now()
+	fireAt := now.Add(delay)
 	n := 0
 	s.mu.Lock()
 	for _, raw := range raws {
@@ -225,6 +283,7 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 			for i := range s.records {
 				if s.records[i].ID == id {
 					s.records[i].Hits = append(s.records[i].Hits, hit)
+					s.records[i].FireAt = &fireAt // debounce reset
 					break
 				}
 			}
@@ -234,7 +293,7 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 			continue
 		}
 		s.nextID++
-		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, Event: event, Hits: []scanHit{hit}, CreatedAt: now}}, s.records...)
+		s.records = append([]scanRecord{{ID: s.nextID, Path: key, Status: scanPending, Source: source, Event: event, Hits: []scanHit{hit}, FireAt: &fireAt, CreatedAt: now}}, s.records...)
 		if len(s.records) > autoscanScansMax {
 			s.records = s.records[:autoscanScansMax]
 		}
@@ -267,6 +326,10 @@ func (s *autoscanService) LogIgnored(source, event, ref, note string) {
 
 func (s *autoscanService) fire(key string) {
 	s.mu.Lock()
+	if s.paused { // held — keep it pending; Resume() will re-fire from active[]
+		s.mu.Unlock()
+		return
+	}
 	delete(s.timers, key)
 	id := s.active[key]
 	delete(s.active, key)
@@ -295,6 +358,9 @@ func (s *autoscanService) fire(key string) {
 		s.setStatus(id, scanSkipped, "", "no Plex section matches — add a path mapping", false)
 		return
 	}
+
+	// Rate-limit: space scans out so a released queue / burst drains smoothly.
+	s.throttle()
 
 	// Trigger the scan (bounded concurrency); release the slot before waiting.
 	s.sem <- struct{}{}

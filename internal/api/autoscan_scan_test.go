@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestWebhookAuthorized(t *testing.T) {
@@ -56,6 +57,14 @@ func noPersist(t *testing.T) {
 	t.Cleanup(func() { autoscanSaveFn = prev })
 }
 
+// noThrottle removes the inter-scan gap so fire() runs synchronously in tests.
+func noThrottle(t *testing.T) {
+	t.Helper()
+	prev := autoscanGapFn
+	autoscanGapFn = func() time.Duration { return 0 }
+	t.Cleanup(func() { autoscanGapFn = prev })
+}
+
 func TestPlexScanKey(t *testing.T) {
 	setOptForTest(t, optionsConfig{PathMappings: []pathMapping{{From: "/mnt/local", To: "/mnt/unionfs"}}})
 	cases := map[string]string{
@@ -73,6 +82,7 @@ func TestPlexScanKey(t *testing.T) {
 
 func TestAutoscanCoalesce(t *testing.T) {
 	noPersist(t)
+	noThrottle(t)
 	// Long debounce so nothing fires during the test — we only assert coalescing.
 	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600}})
 	s := newAutoscanService()
@@ -94,6 +104,7 @@ func TestAutoscanCoalesce(t *testing.T) {
 
 func TestAutoscanFireCompleted(t *testing.T) {
 	noPersist(t)
+	noThrottle(t)
 	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})
 
 	var gotSection, gotPath string
@@ -121,6 +132,7 @@ func TestAutoscanFireCompleted(t *testing.T) {
 
 func TestAutoscanAnchorHold(t *testing.T) {
 	noPersist(t)
+	noThrottle(t)
 	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600, Anchors: []string{"/mnt/unionfs/mounted.bin"}}})
 	prevAnchor, prevScan := autoscanAnchorFn, autoscanScanFn
 	scanned := false
@@ -140,8 +152,40 @@ func TestAutoscanAnchorHold(t *testing.T) {
 	}
 }
 
+func TestAutoscanPauseHold(t *testing.T) {
+	noPersist(t)
+	noThrottle(t)
+	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})
+	scanned := false
+	prevScan, prevSection := autoscanScanFn, autoscanSectionFn
+	autoscanSectionFn = func(plexConfig, string) (string, bool) { return "1", true }
+	autoscanScanFn = func(plexConfig, string, string) error { scanned = true; return nil }
+	t.Cleanup(func() { autoscanScanFn, autoscanSectionFn = prevScan, prevSection })
+
+	s := newAutoscanService()
+	s.Pause()
+	s.Enqueue("upload", "", "/m/Show/ep.mkv")
+	key := plexScanKey("/m/Show/ep.mkv")
+	s.fire(key) // paused → held, not scanned
+	if scanned {
+		t.Fatal("must not scan while paused")
+	}
+	if recs := s.recentScans(); len(recs) != 1 || recs[0].Status != scanPending {
+		t.Fatalf("want record still pending while paused, got %+v", recs)
+	}
+	// resume (set the flag directly to avoid the async re-arm, then drive fire)
+	s.mu.Lock()
+	s.paused = false
+	s.mu.Unlock()
+	s.fire(key)
+	if !scanned {
+		t.Fatal("must scan after resume")
+	}
+}
+
 func TestAutoscanFireSkipped(t *testing.T) {
 	noPersist(t)
+	noThrottle(t)
 	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})
 	prev := autoscanSectionFn
 	autoscanSectionFn = func(_ plexConfig, _ string) (string, bool) { return "", false }
@@ -180,6 +224,7 @@ func TestAutoscanKeep(t *testing.T) {
 
 func TestAutoscanEnqueueFilter(t *testing.T) {
 	noPersist(t)
+	noThrottle(t)
 	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600, ExcludeExts: []string{"nfo"}}})
 	s := newAutoscanService()
 	if n := s.Enqueue("webhook", "", "/m/Show/ep.mkv", "/m/Show/ep.nfo"); n != 1 {
@@ -224,6 +269,7 @@ func TestParseArrWebhook(t *testing.T) {
 
 func TestAutoscanEnqueueCount(t *testing.T) {
 	noPersist(t)
+	noThrottle(t)
 	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600}})
 	s := newAutoscanService()
 	if n := s.Enqueue("manual", "", "/m/A/x.mkv", "", "/m/B"); n != 2 {

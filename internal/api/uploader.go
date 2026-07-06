@@ -293,10 +293,12 @@ func migrateTaskRemotes() {
 var (
 	qbitPauseFn    = qbitPause
 	qbitResumeFn   = qbitResume
-	arrImportsFn   = arrSetImportsEnabled
-	plexKillFn     = startPlexTranscodeKill
-	plexUnkillFn   = stopPlexTranscodeKill
-	autoscanHoldFn = autoscanHold
+	arrImportsFn     = arrSetImportsEnabled
+	plexKillFn       = startPlexTranscodeKill
+	plexUnkillFn     = stopPlexTranscodeKill
+	autoscanHoldFn   = autoscanHold                  // external autoscan container (docker pause)
+	autoscanPauseFn  = func() { autoscanSvc().Pause() }  // built-in autoscan hold
+	autoscanResumeFn = func() { autoscanSvc().Resume() }
 )
 
 // applyUploadPause slows down other services just before an upload runs; restore undoes
@@ -312,7 +314,8 @@ func applyUploadPause(p pauseConfig) {
 		plexKillFn(loadOptions().Plex)
 	}
 	if p.AutoscanHold {
-		_ = autoscanHoldFn(true)
+		autoscanPauseFn()        // hold the built-in autoscan queue
+		_ = autoscanHoldFn(true) // and the external container, if any (best-effort)
 	}
 }
 
@@ -327,7 +330,8 @@ func restoreUploadPause(p pauseConfig) {
 		plexUnkillFn()
 	}
 	if p.AutoscanHold {
-		_ = autoscanHoldFn(false)
+		autoscanResumeFn()        // release the built-in autoscan queue
+		_ = autoscanHoldFn(false) // and the external container, if any
 	}
 }
 
@@ -844,7 +848,11 @@ func uploaderTestBlock(w http.ResponseWriter, req *http.Request) {
 		resp["plex"] = "not enabled"
 	}
 	if p.AutoscanHold {
-		resp["autoscan"] = autoscanStatus()
+		builtin := "running"
+		if autoscanSvc().isPaused() {
+			builtin = "paused"
+		}
+		resp["autoscan"] = fmt.Sprintf("built-in: %s · container: %s", builtin, autoscanStatus())
 	} else {
 		resp["autoscan"] = "not enabled"
 	}

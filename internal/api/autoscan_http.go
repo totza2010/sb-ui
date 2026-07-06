@@ -113,6 +113,7 @@ func autoscanStatusHandler(w http.ResponseWriter, _ *http.Request) {
 	svc := autoscanSvc()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": loadOptions().Autoscan.Enabled,
+		"paused":  svc.isPaused(),
 		"queued":  svc.queueDepth(),
 		"counts":  svc.counts(),
 		"scans":   svc.recentScans(),
@@ -123,6 +124,18 @@ func autoscanStatusHandler(w http.ResponseWriter, _ *http.Request) {
 func autoscanClear(w http.ResponseWriter, _ *http.Request) {
 	autoscanSvc().clear()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// autoscanPause / autoscanResume let other subsystems (and the UI) hold the scan
+// queue — e.g. the uploader holds scans while it moves files, then releases.
+func autoscanPause(w http.ResponseWriter, _ *http.Request) {
+	autoscanSvc().Pause()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "paused": true})
+}
+
+func autoscanResume(w http.ResponseWriter, _ *http.Request) {
+	autoscanSvc().Resume()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "paused": false})
 }
 
 func autoscanGetConfig(w http.ResponseWriter, _ *http.Request) {

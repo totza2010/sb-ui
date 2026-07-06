@@ -50,6 +50,7 @@ type tmdbConfig struct {
 type autoscanConfig struct {
 	Enabled      bool   `json:"enabled"`
 	DelaySec     int    `json:"delay_sec"`     // debounce window before a path is scanned; default 5
+	ScanGapSec   int    `json:"scan_gap_sec"`  // min gap between consecutive scans (rate limit); default 3
 	OnUpload     bool   `json:"on_upload"`     // scan the moved paths after an uploader run
 	WebhookToken string `json:"webhook_token"` // shared secret embedded in the arr webhook URL
 	LogSkipped   bool   `json:"log_skipped"`   // also record webhook events we don't scan (debug)

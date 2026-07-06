@@ -819,11 +819,11 @@ export const usePlexTest = () =>
 
 // Built-in autoscan (Settings → Autoscan): a debounced Plex partial-scan service fed
 // by arr webhooks / manual triggers / post-upload. See docs/autoscan-plan.md.
-export interface AutoscanConfig { enabled: boolean; delay_sec: number; on_upload: boolean; webhook_token: string; log_skipped?: boolean; anchors?: string[]; wait_completion?: boolean; idle_sec?: number; timeout_sec?: number; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[] }
+export interface AutoscanConfig { enabled: boolean; delay_sec: number; scan_gap_sec?: number; on_upload: boolean; webhook_token: string; log_skipped?: boolean; anchors?: string[]; wait_completion?: boolean; idle_sec?: number; timeout_sec?: number; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[] }
 export type ScanStatus = 'pending' | 'scanning' | 'completed' | 'skipped' | 'failed' | 'ignored'
 export interface ScanHit { time: string; source: string; event?: string; path: string }
-export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; event?: string; error?: string; hits?: ScanHit[]; created_at: string; started_at?: string; ended_at?: string }
-export interface AutoscanStatus { enabled: boolean; queued: number; counts: Record<ScanStatus, number>; scans: ScanRecord[]; port?: string }
+export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; event?: string; error?: string; hits?: ScanHit[]; fire_at?: string; created_at: string; started_at?: string; ended_at?: string }
+export interface AutoscanStatus { enabled: boolean; paused?: boolean; queued: number; counts: Record<ScanStatus, number>; scans: ScanRecord[]; port?: string }
 export const useAutoscanConfig = () =>
   useQuery<AutoscanConfig>({ queryKey: ['autoscan-config'], queryFn: () => request('/autoscan/config') })
 export const useSaveAutoscanConfig = () =>
@@ -834,6 +834,8 @@ export const useAutoscanTrigger = () =>
   useMutation<{ ok: boolean; queued: number }, Error, string[]>({ mutationFn: (paths) => request('/autoscan/trigger', { method: 'POST', body: JSON.stringify({ paths }) }) })
 export const useAutoscanClear = () =>
   useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/autoscan/clear', { method: 'POST' }) })
+export const useAutoscanPause = () =>
+  useMutation<{ ok: boolean; paused: boolean }, Error, boolean>({ mutationFn: (pause) => request(`/autoscan/${pause ? 'pause' : 'resume'}`, { method: 'POST' }) })
 
 // Seerr multi-instance config (Integrations page): every detected Jellyseerr/Overseerr/
 // Seerr container, each with its own URL + API key.

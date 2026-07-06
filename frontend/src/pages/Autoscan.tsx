@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, type AutoscanConfig, type ScanStatus } from '@/lib/api'
+import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, type AutoscanConfig, type ScanStatus } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,7 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { cn } from '@/lib/cn'
-import { ScanLine, Save, Copy, Check, RefreshCw, Play, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, ChevronRight, Plus, X, FolderInput, SlidersHorizontal } from 'lucide-react'
+import { ScanLine, Save, Copy, Check, RefreshCw, Play, Pause, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, ChevronRight, Plus, X, FolderInput, SlidersHorizontal } from 'lucide-react'
 import { PathPicker } from '@/components/PathPicker'
 
 const EMPTY: AutoscanConfig = { enabled: false, delay_sec: 5, on_upload: false, webhook_token: '' }
@@ -30,12 +30,16 @@ export function AutoscanPanel() {
   const { data: status } = useAutoscanStatus()
   const trigger = useAutoscanTrigger()
   const clear = useAutoscanClear()
+  const pause = useAutoscanPause()
+  const togglePause = () => pause.mutate(!status?.paused, { onSuccess: () => qc.invalidateQueries({ queryKey: ['autoscan-status'] }) })
 
   const [cfg, setCfg] = useState<AutoscanConfig>(EMPTY)
   const [saved, setSaved] = useState(false)
   const [testPath, setTestPath] = useState('')
   const [filter, setFilter] = useState<'all' | ScanStatus>('all')
   const [openRows, setOpenRows] = useState<Record<number, boolean>>({})
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
 
   useEffect(() => { if (data) setCfg({ ...EMPTY, ...data }) }, [data])
 
@@ -73,9 +77,13 @@ export function AutoscanPanel() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={cn('flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium', cfg.enabled ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground')}>
-            <span className={cn('h-2 w-2 rounded-full', cfg.enabled ? 'bg-success' : 'bg-muted-foreground/50')} />{cfg.enabled ? 'Active' : 'Disabled'}
+          <span className={cn('flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium',
+            status?.paused ? 'bg-warning/15 text-warning' : cfg.enabled ? 'bg-success/15 text-success' : 'bg-muted text-muted-foreground')}>
+            <span className={cn('h-2 w-2 rounded-full', status?.paused ? 'bg-warning' : cfg.enabled ? 'bg-success' : 'bg-muted-foreground/50')} />{status?.paused ? 'Paused' : cfg.enabled ? 'Active' : 'Disabled'}
           </span>
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={togglePause} disabled={pause.isPending} title="Held while an upload runs; toggle manually here">
+            {status?.paused ? <><Play className="h-3.5 w-3.5" />Resume</> : <><Pause className="h-3.5 w-3.5" />Pause</>}
+          </Button>
           <Button size="sm" className="gap-1.5" onClick={doSave} disabled={save.isPending}><Save className="h-3.5 w-3.5" />{saved ? 'Saved ✓' : 'Save'}</Button>
         </div>
       </div>
@@ -121,7 +129,7 @@ export function AutoscanPanel() {
                 <span className="w-3.5 shrink-0" />
                 <span className="min-w-0 flex-1">Mapped path</span>
                 <span className="w-32 shrink-0">Trigger</span>
-                <span className="w-28 shrink-0">Status</span>
+                <span className="w-36 shrink-0">Status</span>
                 <span className="w-32 shrink-0 text-right">Created</span>
               </div>
               <div className="max-h-[52vh] divide-y divide-border overflow-y-auto">
@@ -139,7 +147,13 @@ export function AutoscanPanel() {
                           {r.event && <span className="truncate text-[10px] text-muted-foreground/70">{r.event}</span>}
                           {hits.length > 1 && <span className="shrink-0 rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">×{hits.length}</span>}
                         </span>
-                        <span className="w-28 shrink-0"><StatusPill status={r.status} error={r.error} /></span>
+                        <span className="flex w-36 shrink-0 items-center gap-1.5">
+                          <StatusPill status={r.status} error={r.error} />
+                          {r.status === 'pending' && (status?.paused
+                            ? <span className="text-[10px] font-medium text-warning">held</span>
+                            : r.fire_at && <span className="text-[10px] tabular-nums text-muted-foreground">in {Math.max(0, Math.ceil((new Date(r.fire_at).getTime() - now) / 1000))}s</span>)}
+                          {r.status === 'scanning' && r.started_at && <span className="text-[10px] tabular-nums text-muted-foreground">{Math.max(0, Math.floor((now - new Date(r.started_at).getTime()) / 1000))}s</span>}
+                        </span>
                         <span className="w-32 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
                       </div>
                       {open && hits.length > 0 && (
@@ -179,6 +193,11 @@ export function AutoscanPanel() {
                   <Label className="text-[11px]">Debounce (seconds)</Label>
                   <Input type="number" min={1} className="h-8" value={cfg.delay_sec} onChange={(e) => up('delay_sec', Math.max(1, parseInt(e.target.value, 10) || 5))} />
                   <p className="text-[10px] text-muted-foreground">Wait this long, coalescing rapid events for the same folder into one scan.</p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Scan gap (seconds)</Label>
+                  <Input type="number" min={0} className="h-8" value={cfg.scan_gap_sec ?? 3} onChange={(e) => up('scan_gap_sec', Math.max(0, parseInt(e.target.value, 10) || 0))} />
+                  <p className="text-[10px] text-muted-foreground">Min spacing between scans — a released/queued backlog drains one at a time, not all at once. 0 = no limit.</p>
                 </div>
                 <div className="space-y-1">
                   <Label className="flex items-center gap-1 text-[11px]"><Zap className="h-3 w-3" />Scan after upload</Label>
