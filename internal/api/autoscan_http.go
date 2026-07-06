@@ -7,12 +7,28 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"path"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
+
+// serverAddr is the address the HTTP server bound to (set from main). Used to build
+// the real webhook URL — the browser origin is the Traefik/Authelia front, not the
+// port arr must hit directly.
+var serverAddr string
+
+// SetListenAddr records the bind address so the UI can show the true webhook port.
+func SetListenAddr(a string) { serverAddr = a }
+
+func serverPort() string {
+	if _, port, err := net.SplitHostPort(serverAddr); err == nil && port != "" {
+		return port
+	}
+	return "8000"
+}
 
 // autoscanTrigger scans the given paths (manual / generic caller).
 func autoscanTrigger(w http.ResponseWriter, req *http.Request) {
@@ -122,6 +138,7 @@ func autoscanStatusHandler(w http.ResponseWriter, _ *http.Request) {
 		"queued":  svc.queueDepth(),
 		"counts":  svc.counts(),
 		"scans":   svc.recentScans(),
+		"port":    serverPort(), // real port arr must hit (not the browser origin's)
 	})
 }
 

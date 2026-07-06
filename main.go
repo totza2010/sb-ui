@@ -70,6 +70,7 @@ func main() {
 		// The saltbox_mod service sets SB_UI_ADDR itself (it runs behind Authelia).
 		addr = "127.0.0.1:8000"
 	}
+	api.SetListenAddr(addr) // so the UI can show the real webhook port
 	log.Printf("sb-ui %s listening on %s", buildinfo.Version, addr)
 	log.Fatal(http.ListenAndServe(addr, r))
 }

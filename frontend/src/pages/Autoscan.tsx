@@ -32,7 +32,6 @@ export function AutoscanPanel() {
 
   const [cfg, setCfg] = useState<AutoscanConfig>(EMPTY)
   const [saved, setSaved] = useState(false)
-  const [copied, setCopied] = useState(false)
   const [testPath, setTestPath] = useState('')
   const [filter, setFilter] = useState<'all' | ScanStatus>('all')
 
@@ -44,10 +43,16 @@ export function AutoscanPanel() {
 
   const doSave = () => persist(cfg)
   const regenToken = () => persist({ ...cfg, webhook_token: '' }) // backend mints a fresh one
-  const webhookBase = `${window.location.origin}/api/autoscan/webhook`
-  const webhookURL = cfg.webhook_token ? `${webhookBase}/${cfg.webhook_token}` : ''
-  const copyText = (s: string) => { navigator.clipboard.writeText(s); setCopied(true); setTimeout(() => setCopied(false), 1500) }
-  const copyURL = () => { if (webhookURL) { navigator.clipboard.writeText(webhookURL); setCopied(true); setTimeout(() => setCopied(false), 1500) } }
+  // Build webhook URLs from the backend's REAL listen port (arr must hit the port
+  // directly, not the Traefik/Authelia origin). Remote = the host you reached the UI
+  // on; Local = same host as sb-ui.
+  const port = status?.port ?? '8000'
+  const tok = cfg.webhook_token
+  const remoteURL = tok ? `http://${window.location.hostname}:${port}/api/autoscan/webhook/${tok}` : ''
+  const localURL = tok ? `http://localhost:${port}/api/autoscan/webhook/${tok}` : ''
+  const remoteBase = `http://${window.location.hostname}:${port}/api/autoscan/webhook`
+  const [copiedKey, setCopiedKey] = useState('')
+  const copyText = (s: string, key = 's') => { if (!s) return; navigator.clipboard.writeText(s); setCopiedKey(key); setTimeout(() => setCopiedKey(''), 1500) }
   const runTest = () => { const p = testPath.trim(); if (p) trigger.mutate([p], { onSuccess: () => { setTestPath(''); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) } }) }
 
   const counts = status?.counts ?? { pending: 0, scanning: 0, completed: 0, skipped: 0, failed: 0 }
@@ -97,21 +102,30 @@ export function AutoscanPanel() {
         {/* webhook */}
         <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
           <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Sonarr / Radarr webhook</p>
-          <p className="text-[11px] text-muted-foreground">In each *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, tick On Import / On Rename / On Upgrade, then paste the URL below.</p>
-          <div className="flex gap-1.5">
-            <Input readOnly className="h-8 font-mono text-xs" value={webhookURL} placeholder="save to generate a URL" onFocus={(e) => e.currentTarget.select()} />
-            <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Copy" onClick={copyURL} disabled={!webhookURL}>{copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}</Button>
-            <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Regenerate token" onClick={regenToken} disabled={save.isPending}><RefreshCw className={cn('h-3.5 w-3.5', save.isPending && 'animate-spin')} /></Button>
+          <p className="text-[11px] text-muted-foreground">In each *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, tick On Import / On Rename / On Upgrade, then paste a URL below. These hit sb-ui's port <span className="font-mono text-foreground">:{port}</span> directly (skips the Traefik/Authelia front).</p>
+
+          <div className="space-y-2">
+            {([['remote', 'Remote', `via ${window.location.hostname} — for *arr on another host`, remoteURL], ['local', 'Local', 'for *arr on the same host as sb-ui', localURL]] as const).map(([key, label, hint, url]) => (
+              <div key={key} className="space-y-0.5">
+                <p className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground">{label}</span> — {hint}</p>
+                <div className="flex gap-1.5">
+                  <Input readOnly className="h-8 font-mono text-xs" value={url} placeholder="save to generate a URL" onFocus={(e) => e.currentTarget.select()} />
+                  <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Copy" onClick={() => copyText(url, key)} disabled={!url}>{copiedKey === key ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}</Button>
+                  {key === 'remote' && <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Regenerate token" onClick={regenToken} disabled={save.isPending}><RefreshCw className={cn('h-3.5 w-3.5', save.isPending && 'animate-spin')} /></Button>}
+                </div>
+              </div>
+            ))}
           </div>
+
           <div className="space-y-1 rounded-md border border-border bg-secondary/20 p-2 text-[10px] text-muted-foreground">
             <p className="text-foreground">Authenticate any of these ways:</p>
-            <p>• <span className="text-foreground">Paste the URL above</span> — token is in the path (simplest).</p>
-            <p>• Base URL <span className="font-mono text-foreground">{webhookBase}</span> + token in the <span className="font-mono text-foreground">X-API-Key</span> header (or <span className="font-mono">?apikey=</span>).</p>
+            <p>• <span className="text-foreground">Paste a URL above</span> — token is in the path (simplest).</p>
+            <p>• Base URL <span className="font-mono text-foreground">{remoteBase}</span> + token in the <span className="font-mono text-foreground">X-API-Key</span> header (or <span className="font-mono">?apikey=</span>).</p>
             <p>• <span className="text-foreground">Username/Password</span> in *arr: username = anything, <span className="text-foreground">password = the token</span>.</p>
             <p className="flex items-center gap-1.5 pt-0.5">Token: <span className="min-w-0 flex-1 truncate font-mono text-foreground">{cfg.webhook_token || '—'}</span>
-              <button type="button" className="shrink-0 text-primary hover:underline" onClick={() => cfg.webhook_token && copyText(cfg.webhook_token)}>copy</button>
+              <button type="button" className="shrink-0 text-primary hover:underline" onClick={() => copyText(cfg.webhook_token || '', 'tok')}>{copiedKey === 'tok' ? 'copied' : 'copy'}</button>
             </p>
-            <p className="text-muted-foreground/70">Reachable from your *arr containers (host address, not 127.0.0.1). Regenerating invalidates it.</p>
+            <p className="text-muted-foreground/70">Port <span className="font-mono">:{port}</span> must be reachable from your *arr (open host firewall if needed). Regenerating the token invalidates old URLs.</p>
           </div>
         </Card>
       </div>
