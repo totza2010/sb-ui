@@ -25,6 +25,7 @@ sbui_role_paths_folders_list:
   - "/srv/binaries"
   - "{{ sbui_path }}"
   - "{{ sbui_data_path }}"
+  - "{{ sbui_data_path }}/cache"
 
 ################################
 # Web
@@ -43,7 +44,10 @@ sbui_role_web_port: "{{ sbui_web_port | default('9180') }}"
 ################################
 
 sbui_repo: "totza2010/sb-ui"
-sbui_latest_releases_url: "https://api.github.com/repos/{{ sbui_repo }}/releases/latest"
+# Update channel: "stable" (releases/latest) or "nightly" (the moving master
+# pre-release). Track master builds with `sbui_channel: nightly` in your Saltbox config.
+sbui_channel: "stable"
+sbui_releases_url: "https://api.github.com/repos/{{ sbui_repo }}/releases/{{ 'tags/nightly' if (sbui_channel == 'nightly') else 'latest' }}"
 # saltbox_mod sets inject_facts_as_vars=False, so use ansible_facts (not ansible_architecture).
 sbui_arch: "{{ 'arm64' if ansible_facts['architecture'] in ['aarch64', 'arm64'] else 'amd64' }}"
 sbui_asset_name: "sb-ui-linux-{{ sbui_arch }}"

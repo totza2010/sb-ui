@@ -21,13 +21,22 @@
 - name: Create directories
   ansible.builtin.include_tasks: "{{ resources_tasks_path }}/directories/create_directories.yml"
 
-- name: "Get latest sb-ui release metadata"
+- name: "Persist the self-update channel ({{ sbui_channel }})"
+  ansible.builtin.copy:
+    dest: "{{ sbui_data_path }}/cache/update_channel"
+    content: "{{ sbui_channel }}"
+    owner: "{{ user.name }}"
+    group: "{{ user.name }}"
+    mode: "0644"
+    force: true
+
+- name: "Get {{ sbui_channel }} sb-ui release metadata"
   ansible.builtin.include_tasks: "{{ resources_tasks_path }}/git/github_api_request.yml"
   vars:
-    github_api_url: "{{ sbui_latest_releases_url }}"
+    github_api_url: "{{ sbui_releases_url }}"
     github_api_result_var: sbui_latest_release_api
 
-- name: "Get URL for latest sb-ui release ({{ sbui_asset_name }})"
+- name: "Get URL for the {{ sbui_channel }} sb-ui release ({{ sbui_asset_name }})"
   ansible.builtin.set_fact:
     sbui_latest_download_url: "{{ ((sbui_latest_release_api.content | from_json).assets
                                 | selectattr('name', 'equalto', sbui_asset_name)
