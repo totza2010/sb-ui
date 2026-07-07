@@ -22,6 +22,10 @@ func updateChannel() string {
 	return "stable"
 }
 
+// EnsureRoleCurrent syncs the on-disk saltbox_mod role to the running binary/channel
+// (so `sb install mod-sbui` never reinstalls an older build). Call once at startup.
+func EnsureRoleCurrent() { selfupdate.EnsureRoleCurrent(updateChannel()) }
+
 // selfVersion reports the running version vs the newest release on the current channel.
 func selfVersion(w http.ResponseWriter, _ *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

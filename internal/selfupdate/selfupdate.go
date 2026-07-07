@@ -41,6 +41,9 @@ type ghRelease struct {
 	} `json:"assets"`
 }
 
+// RoleAsset is the saltbox_mod role tarball shipped alongside the binary.
+const RoleAsset = "sb-ui-role.tar.gz"
+
 // Info is the result of a version check.
 type Info struct {
 	Current    string `json:"current"`
@@ -48,6 +51,7 @@ type Info struct {
 	Channel    string `json:"channel"`
 	Available  bool   `json:"update_available"`
 	AssetURL   string `json:"asset_url,omitempty"`
+	RoleURL    string `json:"role_url,omitempty"` // sb-ui-role.tar.gz — refreshed with the binary
 	ReleaseURL string `json:"release_url,omitempty"`
 	Asset      string `json:"asset"`
 	Note       string `json:"note,omitempty"`
@@ -100,9 +104,11 @@ func Check(ctx context.Context, channel string) Info {
 	}
 	info.ReleaseURL = rel.HTMLURL
 	for _, a := range rel.Assets {
-		if a.Name == info.Asset {
+		switch a.Name {
+		case info.Asset:
 			info.AssetURL = a.URL
-			break
+		case RoleAsset:
+			info.RoleURL = a.URL
 		}
 	}
 	switch {
@@ -117,3 +123,23 @@ func Check(ctx context.Context, channel string) Info {
 }
 
 func norm(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "v") }
+
+// EnsureRoleCurrent refreshes the on-disk saltbox_mod role if it no longer matches the
+// running binary — so after any self-update, `sb install mod-sbui` reinstalls THIS build
+// (and channel), not whatever the role was last synced to. Best-effort, background; a
+// no-op once the marker matches (no network call). Call it once at startup.
+func EnsureRoleCurrent(channel string) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	if data, err := os.ReadFile(roleVersionMarker); err == nil && strings.TrimSpace(string(data)) == buildinfo.Version {
+		return // role already in sync with the running binary
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	info := Check(ctx, channel)
+	if info.RoleURL == "" {
+		return
+	}
+	_ = refreshRole(ctx, info.RoleURL, buildinfo.Version)
+}

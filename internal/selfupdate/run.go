@@ -1,6 +1,8 @@
 package selfupdate
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -8,10 +10,90 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"sb-ui/internal/jobs"
 )
+
+// saltboxModRolesDir is where the sb-ui role lives so `sb install mod-sbui` finds it.
+const (
+	saltboxModRolesDir = "/opt/saltbox_mod/roles"
+	roleVersionMarker  = saltboxModRolesDir + "/sbui/.sbui-version"
+)
+
+// refreshRole downloads the role tarball and extracts it over /opt/saltbox_mod/roles,
+// keeping the ansible role in lockstep with the running binary/channel. version is
+// stamped into a marker so we can tell later whether the on-disk role is current.
+func refreshRole(ctx context.Context, url, version string) error {
+	tmp, err := os.CreateTemp("", "sbui-role-*.tar.gz")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+	if err := download(ctx, url, tmpPath); err != nil {
+		return err
+	}
+	if err := extractTarGz(tmpPath, saltboxModRolesDir); err != nil {
+		return err
+	}
+	_ = os.WriteFile(roleVersionMarker, []byte(version), 0o644)
+	return nil
+}
+
+// extractTarGz unpacks a .tar.gz into dst (creating dirs), skipping any path that would
+// escape dst.
+func extractTarGz(src, dst string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	root := filepath.Clean(dst)
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(root, filepath.Clean("/"+hdr.Name))
+		if target != root && !strings.HasPrefix(target, root+string(os.PathSeparator)) {
+			continue // path traversal — skip
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o777)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil { //nolint:gosec // trusted release asset
+				_ = out.Close()
+				return err
+			}
+			if err := out.Close(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
 // Run performs an in-place update as a streamed job: download the latest asset,
 // atomically swap the running binary, then re-exec. On success the process is
@@ -69,6 +151,17 @@ func Run(jobID, channel string) {
 		fail("swap binary: %v", err)
 		_ = os.Remove(tmp)
 		return
+	}
+
+	// Refresh our own saltbox_mod role so `sb install mod-sbui` matches this channel
+	// (otherwise a stale role reinstalls the old/stable binary and reverts the update).
+	// Best-effort: a role-refresh failure must not abort a successful binary update.
+	if info.RoleURL != "" {
+		if err := refreshRole(ctx, info.RoleURL, info.Latest); err != nil {
+			log("WARNING: couldn't refresh the saltbox_mod role (sb install may reinstall an older build): " + err.Error())
+		} else {
+			log("Refreshed the saltbox_mod role.")
+		}
 	}
 
 	log("Update applied — restarting into " + info.Latest + "…")

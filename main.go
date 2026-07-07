@@ -71,6 +71,7 @@ func main() {
 		addr = api.DefaultAddr
 	}
 	api.SetListenAddr(addr) // so the UI can show the real webhook port
+	go api.EnsureRoleCurrent() // keep our saltbox_mod role in step with this binary
 	log.Printf("sb-ui %s listening on %s", buildinfo.Version, addr)
 	log.Fatal(http.ListenAndServe(addr, r))
 }
