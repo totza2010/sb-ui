@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"sb-ui/internal/executor"
 )
 
 const autoscanWebhookName = "sb-ui autoscan"
@@ -46,7 +48,37 @@ func gatewayOf(ip string) string {
 	return ""
 }
 
-// webhookCandidates lists the base URLs an *arr might reach sb-ui on, best-first.
+// hostIPv4s returns the host's non-loopback IPv4 addresses (LAN IPs like 192.168.1.170)
+// — the most reliable way for a container to reach sb-ui on the host, since it doesn't
+// depend on the docker network layout the way the per-network gateway does. Only
+// meaningful when sb-ui runs on the host itself (local executor).
+func hostIPv4s() []string {
+	if _, local := executor.Get().(executor.LocalExecutor); !local {
+		return nil
+	}
+	var out []string
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			out = append(out, ip4.String())
+		}
+	}
+	return out
+}
+
+// webhookCandidates lists the base URLs an *arr might reach sb-ui on, best-first: the
+// host's own LAN IP (works regardless of docker network), then the per-network gateway,
+// then host.docker.internal, then the host you loaded the UI on.
 func webhookCandidates(inst arrInstance, browserHost string) []string {
 	port := serverPort()
 	var bases []string
@@ -54,6 +86,9 @@ func webhookCandidates(inst arrInstance, browserHost string) []string {
 		if host = strings.TrimSpace(host); host != "" {
 			bases = append(bases, "http://"+host+":"+port)
 		}
+	}
+	for _, ip := range hostIPv4s() { // host LAN IP — most reliable from any container
+		add(ip)
 	}
 	add(gatewayOf(inst.IP))     // docker gateway = the host, from inside the container
 	add("host.docker.internal") // works on some docker setups
