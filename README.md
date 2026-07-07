@@ -76,11 +76,11 @@ curl -fsSL https://raw.githubusercontent.com/totza2010/sb-ui/master/install.sh |
 ```
 
 Binary → `/opt/saltbox-ui`, raw systemd unit. **The API is unauthenticated, so
-it listens on `127.0.0.1:8000` (loopback only)** — there's no Traefik / SSO / DNS
+it listens on `127.0.0.1:9180` (loopback only)** — there's no Traefik / SSO / DNS
 in this mode. Reach it with an SSH tunnel:
 
 ```bash
-ssh -L 8000:127.0.0.1:8000 user@host    # then open http://localhost:8000
+ssh -L 9180:127.0.0.1:9180 user@host    # then open http://localhost:9180
 ```
 
 Or put an authenticating reverse proxy in front and set `SB_UI_ADDR` to its
@@ -131,7 +131,7 @@ writes a `.env` next to the binary:
 | `SALTBOX_KEY` | SSH private key path | `~/.ssh/id_rsa` |
 | `SALTBOX_PASSWORD` | password auth (instead of key) | — |
 | `SALTBOX_PASSPHRASE` | key passphrase | — |
-| `SB_UI_ADDR` | listen address | `:8000` |
+| `SB_UI_ADDR` | listen address | `127.0.0.1:9180` |
 
 > ⚠️ **Never commit `.env`** — it can hold SSH passwords. It is gitignored;
 > use `.env.example` as a template.
@@ -154,7 +154,7 @@ nav automatically — it only matters on an un-provisioned box.
 Two watchers run together — no rebuilding the binary by hand:
 
 - **Vite** serves the React app with HMR on `http://localhost:5173` and proxies
-  `/api` + `/ws` → the Go backend on `:8000`.
+  `/api` + `/ws` → the Go backend on `:9180`.
 - **[air](https://github.com/air-verse/air)** rebuilds + restarts the Go backend
   (~1s) on any `.go` change, reading `.env` for the connection.
 
@@ -165,7 +165,7 @@ Two watchers run together — no rebuilding the binary by hand:
 Or in two terminals:
 
 ```bash
-air                          # Go backend, hot-reload, :8000   (go install github.com/air-verse/air@latest)
+air                          # Go backend, hot-reload, :9180   (go install github.com/air-verse/air@latest)
 cd frontend && npm run dev   # Vite + HMR, :5173
 ```
 

@@ -1,6 +1,6 @@
 # air config — hot-reload the Go backend in dev.
 # The frontend is served separately by the Vite dev server (npm run dev), which
-# proxies /api + /ws to this backend on :8000. See README "Frontend dev".
+# proxies /api + /ws to this backend on :9180 (the fixed default). See README "Frontend dev".
 root = "."
 tmp_dir = "tmp"
 

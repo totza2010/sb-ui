@@ -41,8 +41,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true, configure: onProxyError },
-      '/ws': { target: 'ws://localhost:8000', ws: true, changeOrigin: true },
+      '/api': { target: 'http://localhost:9180', changeOrigin: true, configure: onProxyError },
+      '/ws': { target: 'ws://localhost:9180', ws: true, changeOrigin: true },
     },
   },
 })

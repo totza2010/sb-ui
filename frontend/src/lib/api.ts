@@ -855,6 +855,10 @@ export const useAutoscanSelfTest = () =>
   useMutation<SelfTestResult, Error, void>({ mutationFn: () => request('/autoscan/selftest', { method: 'POST' }) })
 export const useAutoscanConnCheck = () =>
   useMutation<{ ok: boolean; connections: ConnLink[] }, Error, void>({ mutationFn: () => request('/autoscan/connections/check', { method: 'POST' }) })
+export interface WireCandidate { url: string; ok: boolean; error?: string }
+export interface WireResult { ok: boolean; error?: string; candidates?: WireCandidate[]; working?: string; saved?: boolean; save_error?: string }
+export const useAutoscanWire = () =>
+  useMutation<WireResult, Error, { key: string; hostname: string; save: boolean }>({ mutationFn: (b) => request('/autoscan/connections/wire', { method: 'POST', body: JSON.stringify(b) }) })
 
 // Seerr multi-instance config (Integrations page): every detected Jellyseerr/Overseerr/
 // Seerr container, each with its own URL + API key.

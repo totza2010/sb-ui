@@ -17,6 +17,14 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// DefaultAddr is the canonical loopback bind used when SB_UI_ADDR is unset. The port is
+// FIXED (9180) so arr webhooks and the tsdproxy target stay valid across redeploys — the
+// Saltbox role pins the same port (see deploy/.../sbui). DefaultPort is that port alone.
+const (
+	DefaultPort = "9180"
+	DefaultAddr = "127.0.0.1:" + DefaultPort
+)
+
 // serverAddr is the address the HTTP server bound to (set from main). Used to build
 // the real webhook URL — the browser origin is the Traefik/Authelia front, not the
 // port arr must hit directly.
@@ -29,7 +37,7 @@ func serverPort() string {
 	if _, port, err := net.SplitHostPort(serverAddr); err == nil && port != "" {
 		return port
 	}
-	return "8000"
+	return DefaultPort
 }
 
 // autoscanTrigger scans the given paths (manual / generic caller).

@@ -34,7 +34,9 @@ sbui_role_paths_folders_list:
 # landing page. Set to "{{ sbui_name }}" (or any name) to use a subdomain.
 sbui_role_web_subdomain: ""
 sbui_role_web_domain: "{{ user.domain }}"
-sbui_role_web_port: "{{ sbui_port_lookup.meta.port }}"
+# Fixed port so the arr webhooks / tsdproxy target stay valid across redeploys.
+# Override with `sbui_web_port` in your Saltbox config if 9180 clashes.
+sbui_role_web_port: "{{ sbui_web_port | default('9180') }}"
 
 ################################
 # GitHub

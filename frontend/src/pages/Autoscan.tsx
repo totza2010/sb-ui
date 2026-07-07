@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanSelfTest, useAutoscanConnCheck, type AutoscanConfig, type ScanStatus, type InboundHook, type SelfTestResult, type ConnLink } from '@/lib/api'
+import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanSelfTest, useAutoscanConnCheck, useAutoscanWire, type AutoscanConfig, type ScanStatus, type InboundHook, type SelfTestResult, type ConnLink, type WireResult } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -66,6 +66,20 @@ export function AutoscanPanel() {
   const connCheck = useAutoscanConnCheck()
   const checkConns = () => connCheck.mutate(undefined, { onSuccess: () => qc.invalidateQueries({ queryKey: ['autoscan-status'] }) })
   const conns = status?.connections ?? []
+
+  // Auto-wire the webhook into an *arr via its own API: find a URL it can reach us on,
+  // save it, and run its test. Result is kept per-connection for inline display.
+  const wire = useAutoscanWire()
+  const [wireResults, setWireResults] = useState<Record<string, WireResult>>({})
+  const [wiringKey, setWiringKey] = useState('')
+  const wireConn = (key: string) => {
+    setWiringKey(key)
+    wire.mutate({ key, hostname: window.location.hostname, save: true }, {
+      onSettled: () => setWiringKey(''),
+      onSuccess: (r) => { setWireResults((m) => ({ ...m, [key]: r })); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) },
+      onError: (e) => setWireResults((m) => ({ ...m, [key]: { ok: false, error: e.message } })),
+    })
+  }
 
   const selfTest = useAutoscanSelfTest()
   const [testResult, setTestResult] = useState<SelfTestResult | null>(null)
@@ -405,7 +419,7 @@ export function AutoscanPanel() {
               {conns.length === 0 ? (
                 <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">No connections yet. Discovered *arr appear after the first health check; webhook senders appear once they hit the endpoint.</p>
               ) : (
-                <div className="grid gap-2 sm:grid-cols-2">{conns.map((c) => <ConnRow key={c.key} c={c} now={now} />)}</div>
+                <div className="grid gap-2 sm:grid-cols-2">{conns.map((c) => <ConnRow key={c.key} c={c} now={now} onWire={wireConn} wiring={wiringKey === c.key} result={wireResults[c.key]} />)}</div>
               )}
               <p className="text-[10px] text-muted-foreground/70">Inbound = arr → sb-ui (webhooks). API = sb-ui → arr (every 60s). Healthy when both work; “dropped” = API no longer reachable.</p>
             </Card>
@@ -578,7 +592,7 @@ const HEALTH_META: Record<string, { cls: string; dot: string; Icon: typeof Clock
   fail: { cls: 'text-destructive', dot: 'bg-destructive', Icon: XCircle, label: 'API unreachable' },
   unknown: { cls: 'text-muted-foreground', dot: 'bg-muted-foreground/50', Icon: MinusCircle, label: 'not checked' },
 }
-function ConnRow({ c, now }: { c: ConnLink; now: number }) {
+function ConnRow({ c, now, onWire, wiring, result }: { c: ConnLink; now: number; onWire: (key: string) => void; wiring: boolean; result?: WireResult }) {
   const h = HEALTH_META[c.health] ?? HEALTH_META.unknown
   const authFail = c.last_result === 'unauthorized'
   return (
@@ -606,6 +620,40 @@ function ConnRow({ c, now }: { c: ConnLink; now: number }) {
       {(c.probe_url || c.remote) && (
         <p className="mt-1 truncate pl-4 font-mono text-[10px] text-muted-foreground/60">{c.probe_url || (c.remote && `from ${c.remote}`)}</p>
       )}
+
+      {/* auto-wire: only for arrs whose API we can reach (matched) */}
+      {c.matched && c.health === 'ok' && (
+        <div className="mt-2 border-t border-border/60 pt-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[10px] text-muted-foreground">Set up its webhook via the arr API</p>
+            <Button size="sm" variant="outline" className="h-6 gap-1.5 px-2 text-[11px]" onClick={() => onWire(c.key)} disabled={wiring}>
+              {wiring ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}Wire &amp; test
+            </Button>
+          </div>
+          {result && <WireOutcome r={result} />}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// WireOutcome shows the result of auto-wiring: the URL that worked (and whether it was
+// saved), or every candidate that failed with the *arr's own reason.
+function WireOutcome({ r }: { r: WireResult }) {
+  if (r.working) return (
+    <div className="mt-1.5 rounded border border-success/40 bg-success/5 p-2 text-[10px]">
+      <p className="flex items-center gap-1.5 font-medium text-success"><CheckCircle2 className="h-3.5 w-3.5" />Webhook reachable{r.saved ? ' — saved to the arr' : ''}</p>
+      <p className="mt-0.5 break-all font-mono text-muted-foreground">{r.working}</p>
+      {r.save_error && <p className="mt-0.5 text-destructive">Saved test passed but write failed: {r.save_error}</p>}
+    </div>
+  )
+  return (
+    <div className="mt-1.5 rounded border border-destructive/40 bg-destructive/5 p-2 text-[10px]">
+      <p className="flex items-center gap-1.5 font-medium text-destructive"><XCircle className="h-3.5 w-3.5" />No reachable URL found</p>
+      {r.error && <p className="mt-0.5 text-muted-foreground">{r.error}</p>}
+      {r.candidates?.map((cand) => (
+        <p key={cand.url} className="mt-0.5 break-all text-muted-foreground/80"><span className="font-mono">{cand.url}</span> — <span className="text-destructive">{cand.error || 'failed'}</span></p>
+      ))}
     </div>
   )
 }

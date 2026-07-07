@@ -253,15 +253,15 @@ func syncSelfProxy() {
 }
 
 // selfTarget resolves sb-ui's own backend URL. tsdproxy runs on the host, so it
-// reaches sb-ui over loopback. The port is dynamic (the Saltbox role picks one in
-// 9180-9189), so we read it from the host's service unit — NOT our own process env,
-// which is wrong when sb-ui is driven remotely (dev) or hasn't the var set.
+// reaches sb-ui over loopback. The Saltbox role pins the port (9180), but we still
+// read it from the host's service unit so an overridden port is honoured — NOT our own
+// process env, which is wrong when sb-ui is driven remotely (dev) or hasn't the var set.
 func selfTarget() string {
 	port := hostSbuiPort()
 	if port == "" {
 		addr := os.Getenv("SB_UI_ADDR") // fallback: our own listen addr
 		if strings.TrimSpace(addr) == "" {
-			addr = "127.0.0.1:8000"
+			addr = DefaultAddr
 		}
 		port = addr
 		if i := strings.LastIndex(addr, ":"); i >= 0 {

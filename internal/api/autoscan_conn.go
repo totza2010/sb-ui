@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -293,11 +294,20 @@ func (r *connRegistry) clear() {
 
 // runProber periodically re-checks every discovered arr so a link that has dropped
 // (arr stopped, network down, key revoked) is reflected without waiting for a webhook.
+// Each cycle is isolated with recover — a probe must NEVER be able to crash sb-ui
+// (an unrecovered panic in a background goroutine takes the whole process down).
 func (r *connRegistry) runProber() {
 	// small initial delay so discovery/executor are ready after boot
 	time.Sleep(20 * time.Second)
 	for {
-		r.probeAll()
+		func() {
+			defer func() {
+				if v := recover(); v != nil {
+					log.Printf("autoscan connection prober recovered from panic: %v", v)
+				}
+			}()
+			r.probeAll()
+		}()
 		time.Sleep(connProbeEvery)
 	}
 }

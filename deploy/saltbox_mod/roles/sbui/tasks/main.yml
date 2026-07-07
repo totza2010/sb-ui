@@ -18,13 +18,6 @@
   vars:
     _service_name: "{{ sbui_service_name }}"
 
-- name: Get next available port within the range of '9180-9189'
-  find_open_port:
-    low_bound: 9180
-    high_bound: 9189
-    protocol: both
-  register: sbui_port_lookup
-
 - name: Create directories
   ansible.builtin.include_tasks: "{{ resources_tasks_path }}/directories/create_directories.yml"
 

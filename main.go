@@ -67,8 +67,8 @@ func main() {
 	if addr == "" {
 		// Loopback by default — the API is unauthenticated, so it must not be
 		// exposed on all interfaces unless explicitly requested via SB_UI_ADDR.
-		// The saltbox_mod service sets SB_UI_ADDR itself (it runs behind Authelia).
-		addr = "127.0.0.1:8000"
+		// The saltbox_mod service sets SB_UI_ADDR=:9180 (fixed port, behind Authelia).
+		addr = api.DefaultAddr
 	}
 	api.SetListenAddr(addr) // so the UI can show the real webhook port
 	log.Printf("sb-ui %s listening on %s", buildinfo.Version, addr)
