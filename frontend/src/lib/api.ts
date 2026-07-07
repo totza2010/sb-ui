@@ -835,7 +835,10 @@ export interface AutoscanConfig { enabled: boolean; delay_sec: number; scan_gap_
 export type ScanStatus = 'pending' | 'scanning' | 'completed' | 'skipped' | 'failed' | 'ignored'
 export interface ScanHit { time: string; source: string; event?: string; path: string }
 export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; event?: string; error?: string; hits?: ScanHit[]; fire_at?: string; created_at: string; started_at?: string; ended_at?: string }
-export interface AutoscanStatus { enabled: boolean; paused?: boolean; queued: number; counts: Record<ScanStatus, number>; scans: ScanRecord[]; port?: string }
+export interface InboundHook { at: string; source: string; instance?: string; app_url?: string; event?: string; result: string; code?: number; detail?: string; remote?: string }
+export interface ConnLink { key: string; source: string; instance?: string; app_url?: string; probe_url?: string; remote?: string; first_seen: string; last_seen?: string | null; last_event?: string; last_result?: string; hits: number; matched: boolean; health: 'ok' | 'fail' | 'unknown'; health_at?: string | null; health_note?: string }
+export interface AutoscanStatus { enabled: boolean; paused?: boolean; queued: number; counts: Record<ScanStatus, number>; scans: ScanRecord[]; port?: string; last_inbound?: InboundHook | null; connections?: ConnLink[] }
+export interface SelfTestResult { ok: boolean; url: string; status?: number; response?: string; error?: string; latency_ms?: number }
 export const useAutoscanConfig = () =>
   useQuery<AutoscanConfig>({ queryKey: ['autoscan-config'], queryFn: () => request('/autoscan/config') })
 export const useSaveAutoscanConfig = () =>
@@ -848,6 +851,10 @@ export const useAutoscanClear = () =>
   useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/autoscan/clear', { method: 'POST' }) })
 export const useAutoscanPause = () =>
   useMutation<{ ok: boolean; paused: boolean }, Error, boolean>({ mutationFn: (pause) => request(`/autoscan/${pause ? 'pause' : 'resume'}`, { method: 'POST' }) })
+export const useAutoscanSelfTest = () =>
+  useMutation<SelfTestResult, Error, void>({ mutationFn: () => request('/autoscan/selftest', { method: 'POST' }) })
+export const useAutoscanConnCheck = () =>
+  useMutation<{ ok: boolean; connections: ConnLink[] }, Error, void>({ mutationFn: () => request('/autoscan/connections/check', { method: 'POST' }) })
 
 // Seerr multi-instance config (Integrations page): every detected Jellyseerr/Overseerr/
 // Seerr container, each with its own URL + API key.

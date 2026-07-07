@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, type AutoscanConfig, type ScanStatus } from '@/lib/api'
+import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanSelfTest, useAutoscanConnCheck, type AutoscanConfig, type ScanStatus, type InboundHook, type SelfTestResult, type ConnLink } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -61,6 +61,49 @@ export function AutoscanPanel() {
   const copyText = (s: string, key = 's') => { if (!s) return; navigator.clipboard.writeText(s); setCopiedKey(key); setTimeout(() => setCopiedKey(''), 1500) }
   const runTest = () => { const p = testPath.trim(); if (p) trigger.mutate([p], { onSuccess: () => { setTestPath(''); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) } }) }
 
+  // Webhook self-test: round-trip a Test payload through our own endpoint (loopback) —
+  // proves our endpoint + token work, without an *arr. Secondary check.
+  const connCheck = useAutoscanConnCheck()
+  const checkConns = () => connCheck.mutate(undefined, { onSuccess: () => qc.invalidateQueries({ queryKey: ['autoscan-status'] }) })
+  const conns = status?.connections ?? []
+
+  const selfTest = useAutoscanSelfTest()
+  const [testResult, setTestResult] = useState<SelfTestResult | null>(null)
+  const runSelfTest = () => selfTest.mutate(undefined, {
+    onSuccess: (r) => { setTestResult(r); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) },
+    onError: (e) => setTestResult({ ok: false, url: '', error: e.message }),
+  })
+
+  // "Listen for *arr" — arm a wait, then the user clicks Test in Sonarr/Radarr; we
+  // capture the next real inbound webhook and show exactly how we replied. While armed
+  // we poll status fast so the hit shows within ~1.5s.
+  const LISTEN_MS = 90_000
+  const [listening, setListening] = useState(false)
+  const [captured, setCaptured] = useState<InboundHook | null>(null)
+  const [listenTimedOut, setListenTimedOut] = useState(false)
+  const baselineAt = useRef<string | null>(null)
+  const listenStart = useRef(0)
+  const startListen = () => {
+    baselineAt.current = status?.last_inbound?.at ?? null
+    listenStart.current = Date.now()
+    setCaptured(null)
+    setListenTimedOut(false)
+    setListening(true)
+  }
+  const lastAt = status?.last_inbound?.at
+  useEffect(() => { // a fresh inbound arrived while armed → capture it
+    if (listening && status?.last_inbound && lastAt !== baselineAt.current) {
+      setCaptured(status.last_inbound)
+      setListening(false)
+    }
+  }, [lastAt]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { // poll fast + time out while armed
+    if (!listening) return
+    if (Date.now() - listenStart.current > LISTEN_MS) { setListening(false); setListenTimedOut(true); return }
+    const t = setInterval(() => qc.invalidateQueries({ queryKey: ['autoscan-status'] }), 1500)
+    return () => clearInterval(t)
+  }, [listening, now]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const counts = status?.counts ?? { pending: 0, scanning: 0, completed: 0, skipped: 0, failed: 0, ignored: 0 }
   const scans = status?.scans ?? []
   const rows = scans.filter((r) => filter === 'all' || r.status === filter || (filter === 'failed' && r.status === 'skipped'))
@@ -100,6 +143,7 @@ export function AutoscanPanel() {
         <TabsList>
           <TabsTrigger value="activity" className="gap-1.5"><ScanLine className="h-3.5 w-3.5" />Activity</TabsTrigger>
           <TabsTrigger value="settings" className="gap-1.5"><SlidersHorizontal className="h-3.5 w-3.5" />Settings{!cfg.enabled && <span className="ml-0.5 rounded bg-warning/15 px-1 text-[10px] text-warning">off</span>}</TabsTrigger>
+          <TabsTrigger value="webhook" className="gap-1.5"><Webhook className="h-3.5 w-3.5" />Webhook</TabsTrigger>
         </TabsList>
 
         {/* ── Activity ─────────────────────────────────────────────── */}
@@ -245,7 +289,34 @@ export function AutoscanPanel() {
               </label>
             </Card>
 
-            {/* webhook */}
+            {/* filters — moved to the right column of Settings */}
+            <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Filter className="h-4 w-4 text-muted-foreground" />Filters <span className="font-normal text-muted-foreground">— skip events that don't need a Plex scan</span></p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1 sm:col-span-2">
+                  <Label className="text-[11px]">Exclude extensions</Label>
+                  <ExtSelect value={cfg.exclude_exts ?? []} onChange={(v) => up('exclude_exts', v)} />
+                  <p className="text-[10px] text-muted-foreground">Click to toggle; type to add a custom one. Changes to these files won't trigger a scan.</p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Exclude paths</Label>
+                  <PathList value={cfg.exclude_paths ?? []} onChange={(v) => up('exclude_paths', v)} placeholder="type a path or pick…" />
+                  <p className="text-[10px] text-muted-foreground">Prefix match on the incoming path.</p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Include paths <span className="text-muted-foreground/70">(blank = all)</span></Label>
+                  <PathList value={cfg.include_paths ?? []} onChange={(v) => up('include_paths', v)} placeholder="type a path or pick…" />
+                  <p className="text-[10px] text-muted-foreground">If set, only paths under one of these scan.</p>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </TabsContent>
+
+        {/* ── Webhook ──────────────────────────────────────────────── */}
+        <TabsContent value="webhook" className="space-y-4">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* left: webhook URLs + auth + live connection test */}
             <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
           <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Sonarr / Radarr webhook</p>
           <p className="text-[11px] text-muted-foreground">In each *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, tick On Import / On Rename / On Upgrade, then paste a URL below. These hit sb-ui's port <span className="font-mono text-foreground">:{port}</span> directly (skips the Traefik/Authelia front).</p>
@@ -273,30 +344,72 @@ export function AutoscanPanel() {
             </p>
             <p className="text-muted-foreground/70">Port <span className="font-mono">:{port}</span> must be reachable from your *arr (open host firewall if needed). Regenerating the token invalidates old URLs.</p>
           </div>
-        </Card>
-      </div>
 
-      {/* filters */}
-      <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
-        <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Filter className="h-4 w-4 text-muted-foreground" />Filters <span className="font-normal text-muted-foreground">— skip events that don't need a Plex scan</span></p>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1 sm:col-span-2">
-            <Label className="text-[11px]">Exclude extensions</Label>
-            <ExtSelect value={cfg.exclude_exts ?? []} onChange={(v) => up('exclude_exts', v)} />
-            <p className="text-[10px] text-muted-foreground">Click to toggle; type to add a custom one. Changes to these files won't trigger a scan.</p>
+          {/* connection — arm a wait for the *arr's Test, then capture how we replied */}
+          <div className="space-y-2.5 rounded-md border border-border p-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[11px] font-medium text-foreground">Connection</p>
+              {listening
+                ? <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={() => setListening(false)}><X className="h-3.5 w-3.5" />Cancel</Button>
+                : <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={startListen} disabled={!cfg.webhook_token}><Webhook className="h-3.5 w-3.5" />Listen for *arr test</Button>}
+            </div>
+
+            {listening ? (
+              <div className="rounded border border-primary/40 bg-primary/5 p-2.5 text-[10px]">
+                <p className="flex items-center gap-1.5 font-medium text-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" />Waiting for a webhook from your *arr…</p>
+                <p className="mt-1 text-muted-foreground">Now open <span className="text-foreground">Sonarr / Radarr → Settings → Connect → your Webhook</span> and click <span className="text-foreground">Test</span>. The moment it hits us, the result shows here.</p>
+                <p className="mt-1 text-muted-foreground/70">Listening for {Math.max(0, Math.ceil((LISTEN_MS - (now - listenStart.current)) / 1000))}s · make sure the URL points at <span className="font-mono">:{port}</span>.</p>
+              </div>
+            ) : captured ? (
+              <CapturedInbound hook={captured} now={now} />
+            ) : listenTimedOut ? (
+              <div className="rounded border border-warning/40 bg-warning/5 p-2.5 text-[10px]">
+                <p className="flex items-center gap-1.5 font-medium text-warning"><XCircle className="h-3.5 w-3.5" />No webhook arrived within 90s.</p>
+                <p className="mt-1 text-muted-foreground">The *arr never reached us — check the URL/port in its Webhook connection, and that <span className="font-mono">:{port}</span> is reachable (firewall / DNS / different host). Use “Test endpoint” below to confirm sb-ui itself is listening.</p>
+              </div>
+            ) : (
+              <InboundIndicator hook={status?.last_inbound} now={now} />
+            )}
+
+            {/* secondary: loopback self-test — confirms our own endpoint + token */}
+            <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-2">
+              <p className="text-[10px] text-muted-foreground">Or verify sb-ui's own endpoint (no *arr needed):</p>
+              <Button size="sm" variant="ghost" className="h-6 gap-1.5 px-2 text-[11px]" onClick={runSelfTest} disabled={selfTest.isPending || !cfg.webhook_token}>
+                {selfTest.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}Test endpoint
+              </Button>
+            </div>
+            {testResult && (
+              <div className={cn('rounded border p-2 text-[10px]', testResult.ok ? 'border-success/40 bg-success/5' : 'border-destructive/40 bg-destructive/5')}>
+                <p className={cn('flex items-center gap-1.5 font-medium', testResult.ok ? 'text-success' : 'text-destructive')}>
+                  {testResult.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
+                  {testResult.ok ? 'Endpoint reachable — auth OK' : 'Self-test failed'}
+                  {testResult.status != null && <span className="font-normal text-muted-foreground">· HTTP {testResult.status}</span>}
+                  {testResult.latency_ms != null && <span className="font-normal text-muted-foreground">· {testResult.latency_ms}ms</span>}
+                </p>
+                {testResult.error && <p className="mt-0.5 break-all text-muted-foreground">{testResult.error}</p>}
+                <p className="mt-1 text-muted-foreground/70">This only proves sb-ui is listening on <span className="font-mono">:{port}</span>. If it passes but the *arr still can't connect, the problem is network reachability from the *arr (firewall / DNS / different host).</p>
+              </div>
+            )}
           </div>
-          <div className="space-y-1">
-            <Label className="text-[11px]">Exclude paths</Label>
-            <PathList value={cfg.exclude_paths ?? []} onChange={(v) => up('exclude_paths', v)} placeholder="type a path or pick…" />
-            <p className="text-[10px] text-muted-foreground">Prefix match on the incoming path.</p>
+
+            </Card>
+
+            {/* right: known connections registry — inbound + API health, re-checked every 60s */}
+            <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Known connections <span className="font-normal text-muted-foreground">— inbound &amp; API health</span></p>
+                <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={checkConns} disabled={connCheck.isPending}>
+                  {connCheck.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Check now
+                </Button>
+              </div>
+              {conns.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">No connections yet. Discovered *arr appear after the first health check; webhook senders appear once they hit the endpoint.</p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">{conns.map((c) => <ConnRow key={c.key} c={c} now={now} />)}</div>
+              )}
+              <p className="text-[10px] text-muted-foreground/70">Inbound = arr → sb-ui (webhooks). API = sb-ui → arr (every 60s). Healthy when both work; “dropped” = API no longer reachable.</p>
+            </Card>
           </div>
-          <div className="space-y-1">
-            <Label className="text-[11px]">Include paths <span className="text-muted-foreground/70">(blank = all)</span></Label>
-            <PathList value={cfg.include_paths ?? []} onChange={(v) => up('include_paths', v)} placeholder="type a path or pick…" />
-            <p className="text-[10px] text-muted-foreground">If set, only paths under one of these scan.</p>
-          </div>
-        </div>
-      </Card>
         </TabsContent>
       </Tabs>
     </div>
@@ -396,6 +509,107 @@ function PathList({ value, onChange, placeholder, disks, multi }: {
 const STAT_TONE: Record<string, string> = {
   pending: 'text-warning', scanning: 'text-primary', completed: 'text-success', failed: 'text-destructive',
 }
+// INBOUND_META colours the result of the last webhook the endpoint received.
+const INBOUND_META: Record<string, { cls: string; Icon: typeof Clock; label: string }> = {
+  accepted: { cls: 'text-success', Icon: CheckCircle2, label: 'accepted' },
+  test: { cls: 'text-success', Icon: CheckCircle2, label: 'test OK' },
+  ignored: { cls: 'text-muted-foreground', Icon: MinusCircle, label: 'ignored' },
+  disabled: { cls: 'text-warning', Icon: MinusCircle, label: 'autoscan off' },
+  unauthorized: { cls: 'text-destructive', Icon: XCircle, label: 'auth failed' },
+}
+function fmtAgo(iso: string, now: number): string {
+  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000))
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
+function InboundIndicator({ hook, now }: { hook?: InboundHook | null; now: number }) {
+  if (!hook) return (
+    <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+      <Webhook className="h-3.5 w-3.5" />No webhook received yet — nothing has hit this endpoint since the last restart.
+    </p>
+  )
+  const m = INBOUND_META[hook.result] ?? { cls: 'text-muted-foreground', Icon: Webhook, label: hook.result }
+  return (
+    <div className="text-[10px]">
+      <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        <span className="text-muted-foreground">Last inbound:</span>
+        <span className={cn('inline-flex items-center gap-1 font-medium capitalize', m.cls)}><m.Icon className="h-3.5 w-3.5" />{m.label}</span>
+        <span className="font-medium text-foreground capitalize">{hook.source}</span>
+        {hook.event && <span className="text-muted-foreground">{hook.event}</span>}
+        <span className="text-muted-foreground/70">· {fmtAgo(hook.at, now)}</span>
+        {hook.remote && <span className="font-mono text-muted-foreground/70">· {hook.remote}</span>}
+      </p>
+      {hook.detail && <p className="mt-0.5 text-muted-foreground">{hook.detail}</p>}
+      {hook.result === 'unauthorized' && <p className="mt-0.5 text-destructive">The *arr reached us but the token/password was wrong — copy the token again or re-paste the URL.</p>}
+    </div>
+  )
+}
+
+// CapturedInbound is the big confirmation shown after "Listen for *arr" catches a hit —
+// it's the real webhook from the *arr and exactly how we replied.
+function CapturedInbound({ hook, now }: { hook: InboundHook; now: number }) {
+  const ok = hook.result !== 'unauthorized'
+  const m = INBOUND_META[hook.result] ?? { cls: 'text-muted-foreground', Icon: Webhook, label: hook.result }
+  return (
+    <div className={cn('rounded border p-2.5 text-[10px]', ok ? 'border-success/40 bg-success/5' : 'border-destructive/40 bg-destructive/5')}>
+      <p className={cn('flex items-center gap-1.5 text-[11px] font-medium', ok ? 'text-success' : 'text-destructive')}>
+        {ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+        Received a webhook from <span className="capitalize">{hook.source}</span>{hook.event ? ` (${hook.event})` : ''}
+      </p>
+      <p className="mt-1 text-muted-foreground">
+        We replied <span className={cn('font-mono font-medium', ok ? 'text-success' : 'text-destructive')}>HTTP {hook.code ?? (ok ? 200 : 403)}</span>
+        <span className="capitalize"> · {m.label}</span>
+        <span className="text-muted-foreground/70"> · {fmtAgo(hook.at, now)}</span>
+        {hook.remote && <span className="font-mono text-muted-foreground/70"> · from {hook.remote}</span>}
+      </p>
+      {hook.detail && <p className="mt-0.5 text-muted-foreground">{hook.detail}</p>}
+      {!ok && <p className="mt-1 text-destructive">The *arr reached us but the token/password was wrong — re-copy the token or re-paste the URL, then listen again.</p>}
+      {ok && <p className="mt-1 text-muted-foreground/70">Connection confirmed — the *arr can reach sb-ui and we accept its webhooks.</p>}
+    </div>
+  )
+}
+
+// ConnRow renders one known *arr connection: its two health dimensions (API probe +
+// last inbound webhook) plus the "why" note when something is wrong.
+const HEALTH_META: Record<string, { cls: string; dot: string; Icon: typeof Clock; label: string }> = {
+  ok: { cls: 'text-success', dot: 'bg-success', Icon: CheckCircle2, label: 'API reachable' },
+  fail: { cls: 'text-destructive', dot: 'bg-destructive', Icon: XCircle, label: 'API unreachable' },
+  unknown: { cls: 'text-muted-foreground', dot: 'bg-muted-foreground/50', Icon: MinusCircle, label: 'not checked' },
+}
+function ConnRow({ c, now }: { c: ConnLink; now: number }) {
+  const h = HEALTH_META[c.health] ?? HEALTH_META.unknown
+  const authFail = c.last_result === 'unauthorized'
+  return (
+    <div className="rounded-lg border border-border p-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn('h-2 w-2 shrink-0 rounded-full', h.dot)} />
+          <span className="truncate text-sm font-medium capitalize text-foreground">{c.instance || c.source}</span>
+          <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">{c.source}</span>
+          {!c.matched && <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">unknown sender</span>}
+        </div>
+        <span className={cn('flex shrink-0 items-center gap-1 text-[11px] font-medium', h.cls)}><h.Icon className="h-3.5 w-3.5" />{h.label}</span>
+      </div>
+      <div className="mt-1.5 space-y-0.5 pl-4 text-[10px]">
+        <p className="text-muted-foreground">
+          <span className="text-foreground">API</span> (sb-ui → arr): {c.health === 'ok' ? <span className="text-success">{c.health_note || 'ok'}</span> : c.health === 'fail' ? <span className="text-destructive">{c.health_note || 'unreachable'}</span> : <span>not checked yet</span>}
+          {c.health_at && <span className="text-muted-foreground/60"> · {fmtAgo(c.health_at, now)}</span>}
+        </p>
+        <p className="text-muted-foreground">
+          <span className="text-foreground">Inbound</span> (arr → sb-ui): {c.last_seen
+            ? <>{authFail ? <span className="text-destructive">rejected (token)</span> : <span className="text-success">{c.last_result || 'received'}</span>} · {fmtAgo(c.last_seen, now)} · {c.hits}×</>
+            : <span className="text-muted-foreground/60">no webhook yet</span>}
+        </p>
+      </div>
+      {(c.probe_url || c.remote) && (
+        <p className="mt-1 truncate pl-4 font-mono text-[10px] text-muted-foreground/60">{c.probe_url || (c.remote && `from ${c.remote}`)}</p>
+      )}
+    </div>
+  )
+}
+
 function StatCard({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2.5">

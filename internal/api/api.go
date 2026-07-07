@@ -119,6 +119,8 @@ func Mount(r chi.Router) {
 	r.Post("/api/autoscan/webhook/{token}", autoscanWebhook)
 	r.Post("/api/autoscan/webhook", autoscanWebhook) // token via X-API-Key header / ?apikey= / Basic Auth
 	r.Get("/api/autoscan/status", autoscanStatusHandler)
+	r.Post("/api/autoscan/selftest", autoscanSelfTest)         // round-trip the webhook + report
+	r.Post("/api/autoscan/connections/check", autoscanConnCheck) // active arr-API health probe
 	r.Post("/api/autoscan/clear", autoscanClear)
 	r.Post("/api/autoscan/pause", autoscanPause)
 	r.Post("/api/autoscan/resume", autoscanResume)

@@ -10,7 +10,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -67,19 +69,40 @@ func webhookAuthorized(req *http.Request, token string) bool {
 
 func autoscanWebhook(w http.ResponseWriter, req *http.Request) {
 	ac := loadOptions().Autoscan
+	remote := clientIP(req)
+	// Read + identify the caller BEFORE the auth check, so even a rejected webhook is
+	// recorded against the right connection (e.g. "Sonarr reached us but token wrong").
+	body, _ := io.ReadAll(req.Body)
+	var meta struct {
+		EventType      string   `json:"eventType"`
+		Paths          []string `json:"paths"` // generic caller
+		InstanceName   string   `json:"instanceName"`
+		ApplicationURL string   `json:"applicationUrl"`
+	}
+	_ = json.Unmarshal(body, &meta)
+	scan, matched := parseArrWebhook(body)
+	source := scan.Source
+	if source == "" {
+		if len(meta.Paths) > 0 {
+			source = "generic"
+		} else {
+			source = "unknown"
+		}
+	}
+	// record notes the inbound (updates last-seen indicator + connection registry).
+	record := func(result string, code int, event, detail string) {
+		autoscanSvc().noteInbound(inboundHook{Source: source, Instance: meta.InstanceName, AppURL: meta.ApplicationURL,
+			Event: event, Result: result, Code: code, Detail: detail, Remote: remote})
+	}
+
 	if !webhookAuthorized(req, ac.WebhookToken) {
+		record("unauthorized", http.StatusForbidden, meta.EventType, "token/password did not match")
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	body, _ := io.ReadAll(req.Body)
-
-	var meta struct {
-		EventType string   `json:"eventType"`
-		Paths     []string `json:"paths"` // generic caller
-	}
-	_ = json.Unmarshal(body, &meta)
 
 	if strings.EqualFold(meta.EventType, "Test") { // arr "Test" button — just needs a 2xx
+		record("test", http.StatusOK, "Test", "test payload — connection OK")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "test": true})
 		return
 	}
@@ -87,38 +110,91 @@ func autoscanWebhook(w http.ResponseWriter, req *http.Request) {
 	// Master switch: acknowledge the webhook but don't scan while autoscan is off.
 	// (The manual "Scan now" box stays usable so config can be tested.)
 	if !ac.Enabled {
+		record("disabled", http.StatusOK, meta.EventType, "autoscan is turned off")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": 0, "disabled": true})
 		return
 	}
 
-	// Detect the *arr and extract the folders to scan (per-app parsers in autoscan_arr.go).
-	scan, matched := parseArrWebhook(body)
-	source := "webhook"
-	if scan.Source != "" {
-		source = scan.Source
-	}
+	// Extract the folders to scan (per-app parsers in autoscan_arr.go).
 	paths := append(append([]string{}, meta.Paths...), scan.Paths...)
 	if len(paths) == 0 { // unknown app or an event we don't scan on — acknowledge, do nothing
 		if matched && ac.LogSkipped { // debug: record what the *arr sent (e.g. a series-level rename)
 			autoscanSvc().LogIgnored(scan.Source, scan.Event, scan.Ref, "")
 		}
+		record("ignored", http.StatusOK, meta.EventType, "no scannable path in this event")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": 0, "ignored": meta.EventType})
 		return
 	}
 	n := autoscanSvc().Enqueue(source, scan.Event, paths...)
+	record("accepted", http.StatusOK, scan.Event, strconv.Itoa(n)+" path(s) queued")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "queued": n})
+}
+
+// clientIP returns the best-effort caller IP (honours X-Forwarded-For from Traefik).
+func clientIP(req *http.Request) string {
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i > 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
+	}
+	if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		return host
+	}
+	return req.RemoteAddr
+}
+
+// autoscanSelfTest POSTs a synthetic "Test" webhook to our own endpoint over the loopback
+// and reports the round-trip — so the UI's "Test" button gives an immediate, detailed
+// answer (reachable? auth OK? what status/body?) instead of relying on the *arr's opaque
+// test. It exercises the exact token + path an *arr would use.
+func autoscanSelfTest(w http.ResponseWriter, _ *http.Request) {
+	ac := loadOptions().Autoscan
+	url := "http://127.0.0.1:" + serverPort() + "/api/autoscan/webhook/" + ac.WebhookToken
+	res := map[string]any{"url": url}
+	if ac.WebhookToken == "" {
+		res["ok"] = false
+		res["error"] = "no webhook token configured yet — save the autoscan config first"
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"eventType":"Test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	start := time.Now()
+	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	res["latency_ms"] = time.Since(start).Milliseconds()
+	if err != nil {
+		res["ok"] = false
+		res["error"] = err.Error()
+		writeJSON(w, http.StatusOK, res)
+		return
+	}
+	defer resp.Body.Close()
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	res["ok"] = resp.StatusCode == http.StatusOK
+	res["status"] = resp.StatusCode
+	res["response"] = strings.TrimSpace(string(rb))
+	writeJSON(w, http.StatusOK, res)
 }
 
 func autoscanStatusHandler(w http.ResponseWriter, _ *http.Request) {
 	svc := autoscanSvc()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": loadOptions().Autoscan.Enabled,
-		"paused":  svc.isPaused(),
-		"queued":  svc.queueDepth(),
-		"counts":  svc.counts(),
-		"scans":   svc.recentScans(),
-		"port":    serverPort(), // real port arr must hit (not the browser origin's)
+		"enabled":      loadOptions().Autoscan.Enabled,
+		"paused":       svc.isPaused(),
+		"queued":       svc.queueDepth(),
+		"counts":       svc.counts(),
+		"scans":        svc.recentScans(),
+		"port":         serverPort(), // real port arr must hit (not the browser origin's)
+		"last_inbound": svc.lastInbound(),
+		"connections":  connReg().list(),
 	})
+}
+
+// autoscanConnCheck actively probes every discovered *arr's API now and returns the
+// refreshed connection list (the "test the connection / why did it drop" button).
+func autoscanConnCheck(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "connections": connReg().probeAll()})
 }
 
 func autoscanClear(w http.ResponseWriter, _ *http.Request) {

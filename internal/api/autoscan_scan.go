@@ -19,7 +19,9 @@ import (
 
 // Seams (overridden in tests).
 var (
-	autoscanScanFn     = func(cfg plexConfig, sectionID, plexPath string) error { return plexRefreshPath(cfg, sectionID, plexPath) }
+	autoscanScanFn = func(cfg plexConfig, sectionID, plexPath string) error {
+		return plexRefreshPath(cfg, sectionID, plexPath)
+	}
 	autoscanSectionFn  = plexSectionForPath
 	autoscanScanningFn = plexSectionScanning // is Plex still scanning this section?
 	autoscanAnchorFn   = anchorsPresent      // are all anchor files present (mount up)?
@@ -168,6 +170,42 @@ type autoscanService struct {
 	// all firing at once. nextScanAt is set (under the gate) after each scan ends.
 	gate       sync.Mutex
 	nextScanAt time.Time
+
+	lastHook *inboundHook // most recent inbound webhook (any result), for the UI
+}
+
+// inboundHook is the last webhook the endpoint received — surfaced in the UI so a
+// "nothing happens" report can be diagnosed: did the *arr reach us at all, and what
+// did we make of it? Recorded even on auth failure (wrong token/password).
+type inboundHook struct {
+	At       time.Time `json:"at"`
+	Source   string    `json:"source"`             // sonarr / radarr / … / unknown
+	Instance string    `json:"instance,omitempty"` // instanceName from the payload
+	AppURL   string    `json:"app_url,omitempty"`  // applicationUrl the arr advertised
+	Event    string    `json:"event,omitempty"`    // eventType the *arr sent
+	Result   string    `json:"result"`             // accepted | ignored | test | disabled | unauthorized | bad-request
+	Code     int       `json:"code"`               // HTTP status we replied to the *arr with
+	Detail   string    `json:"detail,omitempty"`   // e.g. how many paths queued, or why it was ignored
+	Remote   string    `json:"remote,omitempty"`   // caller IP
+}
+
+func (s *autoscanService) noteInbound(h inboundHook) {
+	// The loopback self-test hits this same endpoint; it's an internal probe, not a
+	// real *arr, so keep it out of the inbound indicator and the connection registry.
+	if h.Instance == "" && isLoopbackRemote(h.Remote) {
+		return
+	}
+	h.At = time.Now()
+	s.mu.Lock()
+	s.lastHook = &h
+	s.mu.Unlock()
+	connReg().upsertInbound(h) // keep the persistent connection registry current
+}
+
+func (s *autoscanService) lastInbound() *inboundHook {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastHook
 }
 
 // Pause holds the scan queue — pending scans stay pending and new triggers still
