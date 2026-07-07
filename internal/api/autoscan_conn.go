@@ -144,8 +144,29 @@ func trimConns(ls []*connLink) {
 	}
 }
 
+// arrByRemoteIP matches a webhook's caller IP to a discovered *arr container, so the
+// inbound merges into that instance's row even when the payload's instanceName differs
+// from the container name (Sonarr defaults its instanceName to "Sonarr").
+func arrByRemoteIP(ip string) (arrInstance, bool) {
+	if ip = strings.TrimSpace(ip); ip == "" {
+		return arrInstance{}, false
+	}
+	for _, inst := range arrInstancesCached() {
+		if inst.IP == ip {
+			return inst, true
+		}
+	}
+	return arrInstance{}, false
+}
+
 // upsertInbound records an inbound webhook against its connection (creating one if new).
 func (r *connRegistry) upsertInbound(h inboundHook) {
+	// Prefer identifying by container IP — it's exact, and merges the webhook into the
+	// discovered instance's row instead of spawning an "unknown sender" duplicate.
+	if inst, ok := arrByRemoteIP(h.Remote); ok {
+		h.Source = inst.Kind
+		h.Instance = inst.Name
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := connKey(h.Source, h.Instance, h.Remote)

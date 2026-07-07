@@ -120,8 +120,11 @@ func webhookResource(url string, id int) string {
 
 // arrTestWebhook asks the *arr to send a test webhook to url and reports the outcome —
 // this is the *arr's own reachability test (the thing that throws "connection refused").
-func arrTestWebhook(inst arrInstance, url string) (bool, string) {
-	ok, body := arrSendRaw(inst, http.MethodPost, "notification/test", webhookResource(url, 0))
+// id is the existing "sb-ui autoscan" notification id (0 if none) — passing it makes the
+// *arr's name-uniqueness check exclude itself, so re-testing an already-wired arr doesn't
+// fail with "Should be unique".
+func arrTestWebhook(inst arrInstance, url string, id int) (bool, string) {
+	ok, body := arrSendRaw(inst, http.MethodPost, "notification/test", webhookResource(url, id))
 	if ok {
 		return true, ""
 	}
@@ -235,11 +238,12 @@ func autoscanWire(w http.ResponseWriter, req *http.Request) {
 	}
 
 	token := loadOptions().Autoscan.WebhookToken
+	existingID, _ := arrFindNotification(inst) // so the test's uniqueness check excludes ours
 	var cands []wireCandidate
 	working := ""
 	for _, base := range webhookCandidates(inst, b.Hostname) {
 		url := base + "/api/autoscan/webhook/" + token
-		tOK, reason := arrTestWebhook(inst, url)
+		tOK, reason := arrTestWebhook(inst, url, existingID)
 		cands = append(cands, wireCandidate{URL: url, OK: tOK, Error: reason})
 		if tOK {
 			working = url
