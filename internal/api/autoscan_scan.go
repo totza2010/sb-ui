@@ -163,6 +163,10 @@ type autoscanService struct {
 	records []scanRecord     // newest first, bounded
 	nextID  int64
 	paused  bool // held (e.g. during an upload); pending scans wait for Resume
+	// pauseLeft freezes each queued scan's REMAINING debounce at Pause, so Resume can
+	// continue each countdown from where it stopped — preserving the order and spacing
+	// the webhooks originally arrived in (rather than resetting everyone to the same time).
+	pauseLeft map[string]time.Duration
 
 	// gate serialises the actual scanning: one scan runs at a time, and when
 	// WaitCompletion is on the gate is held until Plex reports the scan finished —
@@ -214,24 +218,46 @@ func (s *autoscanService) lastInbound() *inboundHook {
 func (s *autoscanService) Pause() {
 	s.mu.Lock()
 	s.paused = true
+	now := time.Now()
+	s.pauseLeft = map[string]time.Duration{}
+	for key, id := range s.active { // freeze each scan's remaining debounce
+		left := autoscanDelay()
+		for j := range s.records {
+			if s.records[j].ID == id {
+				if s.records[j].FireAt != nil {
+					left = s.records[j].FireAt.Sub(now)
+				}
+				s.records[j].FireAt = nil // held — UI shows "held", no countdown
+				break
+			}
+		}
+		if left < 0 {
+			left = 0
+		}
+		s.pauseLeft[key] = left
+	}
 	for _, t := range s.timers {
 		t.Stop()
 	}
+	snap := s.snapshotLocked()
 	s.mu.Unlock()
+	autoscanSaveFn(snap)
 }
 
-// Resume releases the hold and restarts each queued scan's countdown — a fresh
-// debounce, staggered by the scan gap — so after an unpause the rows visibly count
-// down again and fire one at a time instead of all scanning at once.
+// Resume releases the hold and continues each queued scan from the point its debounce
+// froze at Pause (i.e. its original fire time shifted by the paused duration) — so the
+// webhook that arrived first still fires first, keeping the real order/spacing. The scan
+// gap (the gate in fire) still spaces the ACTUAL scans; this is only the debounce phase.
 func (s *autoscanService) Resume() {
 	delay := autoscanDelay()
-	gap := autoscanGapFn()
 	now := time.Now()
 	s.mu.Lock()
 	s.paused = false
-	i := 0
 	for key := range s.active {
-		wait := delay + time.Duration(i)*gap
+		wait, ok := s.pauseLeft[key]
+		if !ok || wait < 0 {
+			wait = delay
+		}
 		fireAt := now.Add(wait)
 		id := s.active[key]
 		for j := range s.records {
@@ -245,8 +271,8 @@ func (s *autoscanService) Resume() {
 			t.Stop()
 		}
 		s.timers[k] = time.AfterFunc(wait, func() { s.fire(k) })
-		i++
 	}
+	s.pauseLeft = nil
 	snap := s.snapshotLocked()
 	s.mu.Unlock()
 	autoscanSaveFn(snap)
@@ -305,6 +331,14 @@ func (s *autoscanService) snapshotLocked() scanFile {
 	return scanFile{NextID: s.nextID, Records: append([]scanRecord{}, s.records...)}
 }
 
+// pauseLeftSet records a scan's remaining debounce while paused (caller holds mu).
+func (s *autoscanService) pauseLeftSet(key string, d time.Duration) {
+	if s.pauseLeft == nil {
+		s.pauseLeft = map[string]time.Duration{}
+	}
+	s.pauseLeft[key] = d
+}
+
 // Enqueue schedules a debounced scan for each raw path; rapid duplicates for the
 // same target folder collapse into one pending record. Returns how many were accepted.
 func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
@@ -313,11 +347,11 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 	now := time.Now()
 	n := 0
 	s.mu.Lock()
-	// While paused (e.g. mid-upload) we still record hits and hold records pending,
-	// but arm NO timers — otherwise a timer set during the pause keeps its old
-	// countdown and fires early right after Resume. Resume is the sole thing that
-	// arms timers after a pause, all with a fresh staggered countdown. FireAt stays
-	// nil so the UI shows the row as "held".
+	// While paused (e.g. mid-upload) we still record hits and hold records pending, but
+	// arm NO timers — Resume is the sole thing that arms them after a pause. A hit that
+	// arrives during the pause resets that scan's frozen debounce to the full delay
+	// (recorded in pauseLeft), so it counts a fresh window from Resume. FireAt stays nil
+	// so the UI shows the row as "held".
 	paused := s.paused
 	var fireAt *time.Time
 	if !paused {
@@ -346,6 +380,8 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 				if t := s.timers[key]; t != nil {
 					t.Reset(delay)
 				}
+			} else {
+				s.pauseLeftSet(key, delay) // fresh hit → full debounce on resume
 			}
 			continue
 		}
@@ -358,6 +394,8 @@ func (s *autoscanService) Enqueue(source, event string, raws ...string) int {
 		if !paused {
 			k := key
 			s.timers[k] = time.AfterFunc(delay, func() { s.fire(k) })
+		} else {
+			s.pauseLeftSet(key, delay)
 		}
 	}
 	snap := s.snapshotLocked()

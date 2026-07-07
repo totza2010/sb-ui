@@ -133,6 +133,15 @@ export function AutoscanPanel() {
   const scans = status?.scans ?? []
   const rows = scans.filter((r) => filter === 'all' || r.status === filter || (filter === 'failed' && r.status === 'skipped'))
 
+  // Queue positions: a pending scan whose debounce has elapsed isn't counting down any
+  // more — it's waiting its turn behind the one scanning (scans run one at a time). Rank
+  // those by fire time so each row shows #1, #2, … which counts down as the queue drains.
+  const queuePos: Record<number, number> = {}
+  scans
+    .filter((r) => r.status === 'pending' && r.fire_at && new Date(r.fire_at).getTime() <= now)
+    .sort((a, b) => new Date(a.fire_at!).getTime() - new Date(b.fire_at!).getTime())
+    .forEach((r, i) => { queuePos[r.id] = i + 1 })
+
   return (
     <div className="space-y-5">
       {/* header */}
@@ -217,10 +226,12 @@ export function AutoscanPanel() {
                           {hits.length > 1 && <span className="shrink-0 rounded-full bg-primary/15 px-1.5 text-[10px] font-medium text-primary">×{hits.length}</span>}
                         </span>
                         <span className="flex w-36 shrink-0 items-center gap-1.5">
-                          <StatusPill status={r.status} error={r.error} />
+                          <StatusPill status={r.status} error={r.error} queued={!status?.paused && !!queuePos[r.id]} />
                           {r.status === 'pending' && (status?.paused
                             ? <span className="text-[10px] font-medium text-warning">held</span>
-                            : r.fire_at && <span className="text-[10px] tabular-nums text-muted-foreground">in {Math.max(0, Math.ceil((new Date(r.fire_at).getTime() - now) / 1000))}s</span>)}
+                            : queuePos[r.id]
+                              ? <span className="text-[10px] font-medium tabular-nums text-warning">#{queuePos[r.id]} in queue</span>
+                              : r.fire_at && <span className="text-[10px] tabular-nums text-muted-foreground">in {Math.max(0, Math.ceil((new Date(r.fire_at).getTime() - now) / 1000))}s</span>)}
                           {r.status === 'scanning' && r.started_at && <span className="text-[10px] tabular-nums text-muted-foreground">{Math.max(0, Math.floor((now - new Date(r.started_at).getTime()) / 1000))}s</span>}
                         </span>
                         <span className="w-32 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
@@ -762,11 +773,12 @@ const STATUS_META: Record<ScanStatus, { cls: string; Icon: typeof Clock }> = {
   ignored: { cls: 'bg-muted text-muted-foreground/70', Icon: MinusCircle },
   failed: { cls: 'bg-destructive/15 text-destructive', Icon: XCircle },
 }
-function StatusPill({ status, error }: { status: ScanStatus; error?: string }) {
+function StatusPill({ status, error, queued }: { status: ScanStatus; error?: string; queued?: boolean }) {
   const { cls, Icon } = STATUS_META[status]
+  // A pending scan past its debounce is really "queued" (waiting its turn to scan).
   return (
     <span title={error} className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize', cls)}>
-      <Icon className={cn('h-3 w-3', status === 'scanning' && 'animate-spin')} />{status}
+      <Icon className={cn('h-3 w-3', status === 'scanning' && 'animate-spin')} />{queued ? 'queued' : status}
     </span>
   )
 }
