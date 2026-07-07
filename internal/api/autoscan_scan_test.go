@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -225,6 +226,47 @@ func TestAutoscanPauseNoTimersResumeReArms(t *testing.T) {
 			t.Fatalf("Resume must set a fresh FireAt on each pending record: %+v", r)
 		}
 	}
+}
+
+// Scans run one at a time: the second queued scan must not start until the first
+// has finished (here: released), then wait the gap.
+func TestAutoscanSerializesScans(t *testing.T) {
+	noPersist(t)
+	noThrottle(t)
+	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})
+	prevScan, prevSection := autoscanScanFn, autoscanSectionFn
+	autoscanSectionFn = func(plexConfig, string) (string, bool) { return "1", true }
+	started := make(chan string, 4)
+	release := make(chan struct{})
+	autoscanScanFn = func(_ plexConfig, _, key string) error {
+		started <- key
+		<-release // block until the test lets this scan finish
+		return nil
+	}
+	t.Cleanup(func() { autoscanScanFn, autoscanSectionFn = prevScan, prevSection })
+
+	s := newAutoscanService()
+	s.Enqueue("manual", "", "/m/A/ep.mkv")
+	s.Enqueue("manual", "", "/m/B/ep.mkv")
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); s.fire(plexScanKey("/m/A/ep.mkv")) }()
+	go func() { defer wg.Done(); s.fire(plexScanKey("/m/B/ep.mkv")) }()
+
+	first := <-started // exactly one scan starts…
+	select {
+	case k := <-started:
+		t.Fatalf("second scan %q started before first %q finished", k, first)
+	case <-time.After(150 * time.Millisecond):
+	}
+	release <- struct{}{} // …let the first finish → the second must now start
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("second scan did not start after the first completed")
+	}
+	release <- struct{}{}
+	wg.Wait() // let both fire() goroutines finish before cleanup restores the seams
 }
 
 func TestAutoscanFireSkipped(t *testing.T) {

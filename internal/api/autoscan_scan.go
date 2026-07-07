@@ -161,26 +161,13 @@ type autoscanService struct {
 	records []scanRecord     // newest first, bounded
 	nextID  int64
 	paused  bool // held (e.g. during an upload); pending scans wait for Resume
-	sem     chan struct{}
 
-	gate       sync.Mutex // serialises scans so a drained queue doesn't hammer Plex
+	// gate serialises the actual scanning: one scan runs at a time, and when
+	// WaitCompletion is on the gate is held until Plex reports the scan finished —
+	// so queued scans drain one-completing-at-a-time, then wait the gap, instead of
+	// all firing at once. nextScanAt is set (under the gate) after each scan ends.
+	gate       sync.Mutex
 	nextScanAt time.Time
-}
-
-// throttle blocks until the min gap since the previous scan has elapsed. Holding the
-// gate while sleeping serialises callers, so a burst (or a queue released by Resume)
-// drains one scan per gap instead of all at once.
-func (s *autoscanService) throttle() {
-	gap := autoscanGapFn()
-	if gap <= 0 {
-		return
-	}
-	s.gate.Lock()
-	defer s.gate.Unlock()
-	if wait := time.Until(s.nextScanAt); wait > 0 {
-		time.Sleep(wait)
-	}
-	s.nextScanAt = time.Now().Add(gap)
 }
 
 // Pause holds the scan queue — pending scans stay pending and new triggers still
@@ -237,7 +224,6 @@ func newAutoscanService() *autoscanService {
 	s := &autoscanService{
 		timers: map[string]*time.Timer{},
 		active: map[string]int64{},
-		sem:    make(chan struct{}, 2),
 	}
 	var f scanFile
 	store.ReadJSON(autoscanScansRel, &f)
@@ -367,19 +353,21 @@ func (s *autoscanService) fire(key string) {
 	}
 	delete(s.timers, key)
 	id := s.active[key]
-	delete(s.active, key)
+	delete(s.active, key) // claim this queue slot
 	s.mu.Unlock()
 	if id == 0 {
 		return
 	}
 
-	s.setStatus(id, scanScanning, "", "", true)
-
 	ac := loadOptions().Autoscan
 	cfg := loadOptions().Plex
 
-	// Hold the scan if the mount looks down (a required anchor file is missing) — a
-	// scan against a dropped mount can make Plex trash the whole library.
+	// Pre-flight before taking a turn in the scan queue — a hold/skip shouldn't
+	// occupy the serializer or delay the next real scan. The row stays "pending"
+	// (not "scanning") until it actually reaches the head of the queue.
+	//
+	// Hold if the mount looks down (a required anchor is missing) — a scan against a
+	// dropped mount can make Plex trash the whole library.
 	if ok, missing := autoscanAnchorFn(ac.Anchors); !ok {
 		s.setStatus(id, scanSkipped, "", "mount not ready — missing anchor: "+missing, false)
 		return
@@ -394,22 +382,46 @@ func (s *autoscanService) fire(key string) {
 		return
 	}
 
-	// Rate-limit: space scans out so a released queue / burst drains smoothly.
-	s.throttle()
+	// Serialize: only one scan runs at a time. When WaitCompletion is on we hold the
+	// gate until Plex reports this scan finished, so the next queued scan waits for
+	// the previous to actually complete — then the gap — instead of all starting at
+	// once. nextScanAt (set on the way out) spaces the following scan by the gap.
+	s.gate.Lock()
+	defer func() {
+		s.nextScanAt = time.Now().Add(autoscanGapFn())
+		s.gate.Unlock()
+	}()
+	if wait := time.Until(s.nextScanAt); wait > 0 {
+		time.Sleep(wait)
+	}
 
-	// Trigger the scan (bounded concurrency); release the slot before waiting.
-	s.sem <- struct{}{}
-	err := autoscanScanFn(cfg, secID, key)
-	<-s.sem
-	if err != nil {
+	// Paused while we waited our turn → re-queue (held) for Resume, don't scan. This
+	// and Resume both run under s.mu, so the re-queue and the re-arm can't race.
+	s.mu.Lock()
+	if s.paused {
+		s.active[key] = id
+		for i := range s.records {
+			if s.records[i].ID == id {
+				s.records[i].FireAt = nil
+				break
+			}
+		}
+		snap := s.snapshotLocked()
+		s.mu.Unlock()
+		autoscanSaveFn(snap)
+		return
+	}
+	s.mu.Unlock()
+
+	s.setStatus(id, scanScanning, secID, "", true)
+	switch err := autoscanScanFn(cfg, secID, key); {
+	case err != nil:
 		s.setStatus(id, scanFailed, secID, err.Error(), false)
-		return
-	}
-	if !ac.WaitCompletion {
+	case ac.WaitCompletion:
+		s.waitComplete(id, secID, cfg, ac) // poll Plex until it actually finishes
+	default:
 		s.setStatus(id, scanCompleted, secID, "", false)
-		return
 	}
-	s.waitComplete(id, secID, cfg, ac) // poll Plex until it actually finishes
 }
 
 // waitComplete polls Plex /activities until the section's scan goes idle (or a
