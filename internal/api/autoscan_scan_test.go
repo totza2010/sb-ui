@@ -269,6 +269,57 @@ func TestAutoscanSerializesScans(t *testing.T) {
 	wg.Wait() // let both fire() goroutines finish before cleanup restores the seams
 }
 
+// Resume must preserve the real gaps between when webhooks first arrived (CreatedAt),
+// not flatten them to one uniform stagger.
+func TestAutoscanResumePreservesArrivalGaps(t *testing.T) {
+	noPersist(t)
+	setOptForTest(t, optionsConfig{Autoscan: autoscanConfig{DelaySec: 3600}}) // huge delay: timers won't fire mid-test
+
+	s := newAutoscanService()
+	base := time.Now().Add(-10 * time.Minute)
+	specs := []struct {
+		key string
+		off time.Duration
+	}{
+		{"/m/A", 0},
+		{"/m/B", 60 * time.Second},
+		{"/m/C", 180 * time.Second},
+	}
+	s.mu.Lock()
+	for i, sp := range specs {
+		id := int64(i + 1)
+		s.records = append(s.records, scanRecord{ID: id, Path: sp.key, Status: scanPending, CreatedAt: base.Add(sp.off)})
+		s.active[sp.key] = id
+	}
+	s.nextID = int64(len(specs))
+	s.paused = true
+	s.mu.Unlock()
+
+	s.Resume()
+
+	fireAt := func(key string) time.Time {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		id := s.active[key]
+		for j := range s.records {
+			if s.records[j].ID == id && s.records[j].FireAt != nil {
+				return *s.records[j].FireAt
+			}
+		}
+		t.Fatalf("no FireAt for %s after resume", key)
+		return time.Time{}
+	}
+	fa, fb, fc := fireAt("/m/A"), fireAt("/m/B"), fireAt("/m/C")
+
+	within := func(got, want, tol time.Duration) bool { d := got - want; return d < tol && d > -tol }
+	if d := fb.Sub(fa); !within(d, 60*time.Second, 2*time.Second) {
+		t.Fatalf("B should fire 60s after A, got %v", d)
+	}
+	if d := fc.Sub(fa); !within(d, 180*time.Second, 2*time.Second) {
+		t.Fatalf("C should fire 180s after A, got %v", d)
+	}
+}
+
 func TestAutoscanFireSkipped(t *testing.T) {
 	noPersist(t)
 	noThrottle(t)

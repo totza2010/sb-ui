@@ -228,14 +228,13 @@ func (s *autoscanService) Pause() {
 	autoscanSaveFn(snap)
 }
 
-// Resume releases the hold and re-arms each queued scan ORDERED BY ARRIVAL (the first
-// webhook's CreatedAt stamp), staggered by the scan gap — so the one that came in first
-// fires first and they spread out instead of all firing at once. Using CreatedAt (not
-// the debounce remaining) keeps the arrival order even after coalesced hits reset the
-// debounce to the same time. The gate in fire still spaces the actual scans.
+// Resume releases the hold and re-arms each queued scan preserving the REAL gaps between
+// when their first webhooks arrived (CreatedAt): the earliest fires at `delay` from now,
+// and every other is offset by exactly how much later its webhook came in. So a burst
+// that arrived 0s/60s/180s apart resumes 0s/60s/180s apart — not flattened to one gap.
+// The gate in fire still spaces the actual scans by the scan gap.
 func (s *autoscanService) Resume() {
 	delay := autoscanDelay()
-	gap := autoscanGapFn()
 	now := time.Now()
 	s.mu.Lock()
 	s.paused = false
@@ -255,8 +254,12 @@ func (s *autoscanService) Resume() {
 		order = append(order, queued{key, created})
 	}
 	sort.Slice(order, func(i, j int) bool { return order[i].created.Before(order[j].created) })
-	for i, q := range order {
-		wait := delay + time.Duration(i)*gap
+	var base time.Time
+	if len(order) > 0 {
+		base = order[0].created // earliest arrival = the reference point
+	}
+	for _, q := range order {
+		wait := delay + q.created.Sub(base) // full debounce + how much later this one arrived
 		fireAt := now.Add(wait)
 		id := s.active[q.key]
 		for j := range s.records {
