@@ -831,12 +831,12 @@ export const usePlexTest = () =>
 
 // Built-in autoscan (Settings → Autoscan): a debounced Plex partial-scan service fed
 // by arr webhooks / manual triggers / post-upload. See docs/autoscan-plan.md.
-export interface AutoscanConfig { enabled: boolean; delay_sec: number; scan_gap_sec?: number; on_upload: boolean; webhook_token: string; log_skipped?: boolean; anchors?: string[]; wait_completion?: boolean; idle_sec?: number; timeout_sec?: number; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[] }
+export interface AutoscanConfig { enabled: boolean; delay_sec: number; scan_gap_sec?: number; on_upload: boolean; webhook_token: string; log_skipped?: boolean; anchors?: string[]; wait_completion?: boolean; idle_sec?: number; timeout_sec?: number; exclude_exts?: string[]; exclude_paths?: string[]; include_paths?: string[]; webhook_events?: string[] }
 export type ScanStatus = 'pending' | 'scanning' | 'completed' | 'skipped' | 'failed' | 'ignored'
 export interface ScanHit { time: string; source: string; event?: string; path: string }
 export interface ScanRecord { id: number; path: string; section: string; status: ScanStatus; source: string; event?: string; error?: string; hits?: ScanHit[]; fire_at?: string; created_at: string; started_at?: string; ended_at?: string }
 export interface InboundHook { at: string; source: string; instance?: string; app_url?: string; event?: string; result: string; code?: number; detail?: string; remote?: string }
-export interface ConnLink { key: string; source: string; instance?: string; app_url?: string; probe_url?: string; remote?: string; first_seen: string; last_seen?: string | null; last_event?: string; last_result?: string; hits: number; matched: boolean; health: 'ok' | 'fail' | 'unknown'; health_at?: string | null; health_note?: string }
+export interface ConnLink { key: string; source: string; instance?: string; app_url?: string; probe_url?: string; remote?: string; first_seen: string; last_seen?: string | null; last_event?: string; last_result?: string; hits: number; matched: boolean; health: 'ok' | 'fail' | 'unknown'; health_at?: string | null; health_note?: string; wired?: boolean; wired_url?: string }
 export interface AutoscanStatus { enabled: boolean; paused?: boolean; queued: number; counts: Record<ScanStatus, number>; scans: ScanRecord[]; port?: string; last_inbound?: InboundHook | null; connections?: ConnLink[] }
 export interface SelfTestResult { ok: boolean; url: string; status?: number; response?: string; error?: string; latency_ms?: number }
 export const useAutoscanConfig = () =>
@@ -856,7 +856,7 @@ export const useAutoscanSelfTest = () =>
 export const useAutoscanConnCheck = () =>
   useMutation<{ ok: boolean; connections: ConnLink[] }, Error, void>({ mutationFn: () => request('/autoscan/connections/check', { method: 'POST' }) })
 export interface WireCandidate { url: string; ok: boolean; error?: string }
-export interface WireResult { ok: boolean; error?: string; candidates?: WireCandidate[]; working?: string; saved?: boolean; save_error?: string }
+export interface WireResult { ok: boolean; error?: string; candidates?: WireCandidate[]; working?: string; saved?: boolean; saved_url?: string; save_error?: string; note?: string; arr?: string; connections?: string[] }
 export const useAutoscanWire = () =>
   useMutation<WireResult, Error, { key: string; hostname: string; save: boolean }>({ mutationFn: (b) => request('/autoscan/connections/wire', { method: 'POST', body: JSON.stringify(b) }) })
 

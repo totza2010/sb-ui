@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,9 @@ type connLink struct {
 	Health     string     `json:"health"` // ok | fail | unknown
 	HealthAt   *time.Time `json:"health_at,omitempty"`
 	HealthNote string     `json:"health_note,omitempty"` // version+latency on ok, reason on fail
+	// our webhook state in the arr — is "sb-ui autoscan" configured there, and at what URL
+	Wired    bool   `json:"wired"`
+	WiredURL string `json:"wired_url,omitempty"`
 }
 
 type connFile struct {
@@ -253,7 +257,11 @@ func (r *connRegistry) probeAll() []connLink {
 	insts := arrInstancesCached()
 
 	r.mu.Lock()
+	knownIP := map[string]bool{}
 	for _, inst := range insts {
+		if inst.IP != "" {
+			knownIP[inst.IP] = true
+		}
 		key := connKey(inst.Kind, inst.Name, "")
 		l := r.byKeyLocked(key)
 		if l == nil {
@@ -263,16 +271,32 @@ func (r *connRegistry) probeAll() []connLink {
 		l.Matched = true
 		l.ProbeURL = arrBaseURL(inst)
 	}
+	// Drop stale "unknown sender" rows that are really a discovered arr — now that we
+	// know every container's IP, an unmatched webhook from a known IP is a duplicate.
+	kept := r.links[:0]
+	for _, l := range r.links {
+		if !l.Matched && l.Remote != "" && knownIP[l.Remote] {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	r.links = kept
 	r.mu.Unlock()
 
 	for _, inst := range insts {
 		ok, note := probeArrInstance(inst)
+		wiredURL, wired := "", false
+		if ok { // only worth asking when the API answered
+			wiredURL, wired = arrWiredURL(inst)
+		}
 		now := time.Now()
 		r.mu.Lock()
 		if l := r.byKeyLocked(connKey(inst.Kind, inst.Name, "")); l != nil {
 			l.Health = boolHealth(ok)
 			l.HealthAt = &now
 			l.HealthNote = note
+			l.Wired = wired
+			l.WiredURL = wiredURL
 		}
 		r.mu.Unlock()
 	}
@@ -291,13 +315,31 @@ func boolHealth(ok bool) string {
 	return "fail"
 }
 
+// snapshotLocked returns a copy sorted for a STABLE display: grouped by app, discovered
+// arrs before unknown senders, then by container name (so radarr-hd, radarr-uhd, … stay
+// put instead of reshuffling by last activity every refresh).
 func (r *connRegistry) snapshotLocked() []connLink {
-	trimConns(r.links)
 	out := make([]connLink, len(r.links))
 	for i, l := range r.links {
 		out[i] = *l
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		if out[i].Matched != out[j].Matched {
+			return out[i].Matched // discovered arrs first
+		}
+		return connDisplayName(out[i]) < connDisplayName(out[j])
+	})
 	return out
+}
+
+func connDisplayName(l connLink) string {
+	if l.Instance != "" {
+		return strings.ToLower(l.Instance)
+	}
+	return strings.ToLower(l.Key)
 }
 
 func (r *connRegistry) list() []connLink {

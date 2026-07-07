@@ -18,6 +18,17 @@ import { PathPicker } from '@/components/PathPicker'
 
 const EMPTY: AutoscanConfig = { enabled: false, delay_sec: 5, on_upload: false, webhook_token: '' }
 
+// Webhook triggers "Wire & test" can enable on each *arr Connection (canonical keys
+// mapped per-app on the backend). import=new file, upgrade, rename, delete=file removed.
+const TRIGGERS = [
+  { key: 'import', label: 'Import' },
+  { key: 'upgrade', label: 'Upgrade' },
+  { key: 'rename', label: 'Rename' },
+  { key: 'delete', label: 'Delete' },
+] as const
+const DEFAULT_TRIGGERS = ['import', 'upgrade', 'rename']
+const toggle = (list: string[], key: string) => (list.includes(key) ? list.filter((k) => k !== key) : [...list, key])
+
 // Top-level page (sidebar → Autoscan).
 export function Autoscan() {
   return <div className="mx-auto max-w-6xl p-6"><AutoscanPanel /></div>
@@ -359,6 +370,27 @@ export function AutoscanPanel() {
             <p className="text-muted-foreground/70">Port <span className="font-mono">:{port}</span> must be reachable from your *arr (open host firewall if needed). Regenerating the token invalidates old URLs.</p>
           </div>
 
+          {/* triggers — which *arr Connection events "Wire & test" enables */}
+          <div className="space-y-1.5 rounded-md border border-border p-2.5">
+            <p className="text-[11px] font-medium text-foreground">Triggers to enable when wiring <span className="font-normal text-muted-foreground">— which *arr events fire the webhook</span></p>
+            <div className="flex flex-wrap gap-1.5">
+              {TRIGGERS.map((t) => {
+                const on = (cfg.webhook_events ?? DEFAULT_TRIGGERS).includes(t.key)
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => up('webhook_events', toggle(cfg.webhook_events ?? DEFAULT_TRIGGERS, t.key))}
+                    className={cn('rounded-md border px-2 py-1 text-[11px] font-medium transition-colors', on ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:text-foreground')}
+                  >
+                    {t.label}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-[10px] text-muted-foreground/70">Applied on the next “Wire &amp; test”. Delete = remove from Plex when a file is deleted.</p>
+          </div>
+
           {/* connection — arm a wait for the *arr's Test, then capture how we replied */}
           <div className="space-y-2.5 rounded-md border border-border p-2.5">
             <div className="flex items-center justify-between gap-2">
@@ -419,7 +451,14 @@ export function AutoscanPanel() {
               {conns.length === 0 ? (
                 <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">No connections yet. Discovered *arr appear after the first health check; webhook senders appear once they hit the endpoint.</p>
               ) : (
-                <div className="grid gap-2 sm:grid-cols-2">{conns.map((c) => <ConnRow key={c.key} c={c} now={now} onWire={wireConn} wiring={wiringKey === c.key} result={wireResults[c.key]} />)}</div>
+                <div className="space-y-3">
+                  {groupConns(conns).map(([source, rows]) => (
+                    <div key={source} className="space-y-1.5">
+                      <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{sourceLabel(source)}<span className="font-normal text-muted-foreground/60">{rows.length}</span></p>
+                      <div className="grid gap-2 sm:grid-cols-2">{rows.map((c) => <ConnRow key={c.key} c={c} now={now} onWire={wireConn} wiring={wiringKey === c.key} result={wireResults[c.key]} />)}</div>
+                    </div>
+                  ))}
+                </div>
               )}
               <p className="text-[10px] text-muted-foreground/70">Inbound = arr → sb-ui (webhooks). API = sb-ui → arr (every 60s). Healthy when both work; “dropped” = API no longer reachable.</p>
             </Card>
@@ -592,6 +631,31 @@ const HEALTH_META: Record<string, { cls: string; dot: string; Icon: typeof Clock
   fail: { cls: 'text-destructive', dot: 'bg-destructive', Icon: XCircle, label: 'API unreachable' },
   unknown: { cls: 'text-muted-foreground', dot: 'bg-muted-foreground/50', Icon: MinusCircle, label: 'not checked' },
 }
+// groupConns splits the (already source-sorted) list into [source, rows] groups,
+// preserving order. sourceLabel/variantLabel format the app + its HD/UHD/AI variant.
+function groupConns(conns: ConnLink[]): [string, ConnLink[]][] {
+  const order: string[] = []
+  const map: Record<string, ConnLink[]> = {}
+  for (const c of conns) {
+    if (!map[c.source]) { map[c.source] = []; order.push(c.source) }
+    map[c.source].push(c)
+  }
+  return order.map((s) => [s, map[s]] as [string, ConnLink[]])
+}
+function sourceLabel(s: string): string {
+  if (s === 'unknown') return 'Unknown senders'
+  if (s === 'generic') return 'Generic'
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+function variantLabel(c: ConnLink): string {
+  const inst = c.instance || ''
+  const src = c.source || ''
+  let v = inst
+  if (src && inst.toLowerCase().startsWith(src.toLowerCase())) v = inst.slice(src.length).replace(/^[-_\s]+/, '')
+  if (!v) return inst || sourceLabel(src)
+  return v.length <= 4 ? v.toUpperCase() : v.charAt(0).toUpperCase() + v.slice(1)
+}
+
 function ConnRow({ c, now, onWire, wiring, result }: { c: ConnLink; now: number; onWire: (key: string) => void; wiring: boolean; result?: WireResult }) {
   const h = HEALTH_META[c.health] ?? HEALTH_META.unknown
   const authFail = c.last_result === 'unauthorized'
@@ -600,8 +664,8 @@ function ConnRow({ c, now, onWire, wiring, result }: { c: ConnLink; now: number;
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <span className={cn('h-2 w-2 shrink-0 rounded-full', h.dot)} />
-          <span className="truncate text-sm font-medium capitalize text-foreground">{c.instance || c.source}</span>
-          <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">{c.source}</span>
+          <span className="truncate text-sm font-semibold text-foreground">{variantLabel(c)}</span>
+          {c.instance && variantLabel(c).toLowerCase() !== c.instance.toLowerCase() && <span className="hidden truncate text-[10px] text-muted-foreground/60 sm:inline">{c.instance}</span>}
           {!c.matched && <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">unknown sender</span>}
         </div>
         <span className={cn('flex shrink-0 items-center gap-1 text-[11px] font-medium', h.cls)}><h.Icon className="h-3.5 w-3.5" />{h.label}</span>
@@ -625,11 +689,14 @@ function ConnRow({ c, now, onWire, wiring, result }: { c: ConnLink; now: number;
       {c.matched && c.health === 'ok' && (
         <div className="mt-2 border-t border-border/60 pt-2">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-[10px] text-muted-foreground">Set up its webhook via the arr API</p>
+            {c.wired
+              ? <p className="flex items-center gap-1 text-[10px] font-medium text-success"><CheckCircle2 className="h-3.5 w-3.5" />Webhook configured</p>
+              : <p className="text-[10px] text-muted-foreground">Set up its webhook via the arr API</p>}
             <Button size="sm" variant="outline" className="h-6 gap-1.5 px-2 text-[11px]" onClick={() => onWire(c.key)} disabled={wiring}>
-              {wiring ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}Wire &amp; test
+              {wiring ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}{c.wired ? 'Re-wire' : 'Wire & test'}
             </Button>
           </div>
+          {c.wired && c.wired_url && !result && <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/60">{c.wired_url}</p>}
           {result && <WireOutcome r={result} />}
         </div>
       )}
@@ -637,23 +704,43 @@ function ConnRow({ c, now, onWire, wiring, result }: { c: ConnLink; now: number;
   )
 }
 
-// WireOutcome shows the result of auto-wiring: the URL that worked (and whether it was
-// saved), or every candidate that failed with the *arr's own reason.
+// WireOutcome shows the two directions of auto-wiring independently: whether the webhook
+// was written into the arr (the important part), and whether the arr could reach us back
+// in the test (informational — fine to fail, the webhook is still set).
 function WireOutcome({ r }: { r: WireResult }) {
-  if (r.working) return (
-    <div className="mt-1.5 rounded border border-success/40 bg-success/5 p-2 text-[10px]">
-      <p className="flex items-center gap-1.5 font-medium text-success"><CheckCircle2 className="h-3.5 w-3.5" />Webhook reachable{r.saved ? ' — saved to the arr' : ''}</p>
-      <p className="mt-0.5 break-all font-mono text-muted-foreground">{r.working}</p>
-      {r.save_error && <p className="mt-0.5 text-destructive">Saved test passed but write failed: {r.save_error}</p>}
+  // couldn't even attempt (no matching arr / no token / no candidate)
+  if (r.saved === undefined && !r.working) return (
+    <div className="mt-1.5 rounded border border-destructive/40 bg-destructive/5 p-2 text-[10px]">
+      <p className="flex items-center gap-1.5 font-medium text-destructive"><XCircle className="h-3.5 w-3.5" />Couldn't wire this connection</p>
+      {r.error && <p className="mt-0.5 text-muted-foreground">{r.error}</p>}
     </div>
   )
-  return (
+  // save failed
+  if (r.saved === false) return (
     <div className="mt-1.5 rounded border border-destructive/40 bg-destructive/5 p-2 text-[10px]">
-      <p className="flex items-center gap-1.5 font-medium text-destructive"><XCircle className="h-3.5 w-3.5" />No reachable URL found</p>
-      {r.error && <p className="mt-0.5 text-muted-foreground">{r.error}</p>}
-      {r.candidates?.map((cand) => (
-        <p key={cand.url} className="mt-0.5 break-all text-muted-foreground/80"><span className="font-mono">{cand.url}</span> — <span className="text-destructive">{cand.error || 'failed'}</span></p>
-      ))}
+      <p className="flex items-center gap-1.5 font-medium text-destructive"><XCircle className="h-3.5 w-3.5" />Couldn't write the webhook to the arr</p>
+      {r.save_error && <p className="mt-0.5 break-all text-muted-foreground">{r.save_error}</p>}
+    </div>
+  )
+  // saved (webhook written) — reachability is secondary
+  const hasHook = r.connections?.some((n) => n.toLowerCase() === 'sb-ui autoscan')
+  return (
+    <div className={cn('mt-1.5 rounded border p-2 text-[10px]', r.working ? 'border-success/40 bg-success/5' : 'border-warning/40 bg-warning/5')}>
+      <p className="flex items-center gap-1.5 font-medium text-success"><CheckCircle2 className="h-3.5 w-3.5" />Webhook saved{r.arr ? ` to ${r.arr}` : ' to the arr'}</p>
+      {r.saved_url && <p className="mt-0.5 break-all font-mono text-muted-foreground">{r.saved_url}</p>}
+      {r.connections && (
+        <p className="mt-1 flex flex-wrap items-center gap-1 text-muted-foreground">
+          <span>This arr's connections:</span>
+          {r.connections.map((n) => (
+            <span key={n} className={cn('rounded px-1 py-0.5', n.toLowerCase() === 'sb-ui autoscan' ? 'bg-success/20 font-medium text-success' : 'bg-secondary')}>{n}</span>
+          ))}
+          {!hasHook && <span className="text-destructive">(sb-ui autoscan not found — the save didn't land!)</span>}
+        </p>
+      )}
+      {r.working
+        ? <p className="mt-1 text-success">✓ The arr reached it — the connection is live.</p>
+        : <p className="mt-1 text-warning">⚠ The arr couldn't reach it in the test, so it won't fire yet. The webhook IS set — fix reachability (host binding / firewall / the arr must hit sb-ui on the host, not a dev instance){r.candidates?.[0]?.error ? ` — ${r.candidates[0].error}` : ''}.</p>}
+      {r.note && <p className="mt-1 text-muted-foreground/70">{r.note}</p>}
     </div>
   )
 }

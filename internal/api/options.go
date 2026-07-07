@@ -67,6 +67,9 @@ type autoscanConfig struct {
 	ExcludeExts  []string `json:"exclude_exts"`  // file extensions to ignore (srt, nfo, …)
 	ExcludePaths []string `json:"exclude_paths"` // path prefixes to ignore
 	IncludePaths []string `json:"include_paths"` // if set, only paths under one of these scan
+	// WebhookEvents — which *arr Connection triggers "Wire & test" enables (canonical
+	// keys: import, upgrade, rename, delete). Empty = import+upgrade+rename.
+	WebhookEvents []string `json:"webhook_events"`
 }
 
 type optionsConfig struct {
