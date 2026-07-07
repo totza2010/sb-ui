@@ -849,6 +849,8 @@ export const useAutoscanTrigger = () =>
   useMutation<{ ok: boolean; queued: number }, Error, string[]>({ mutationFn: (paths) => request('/autoscan/trigger', { method: 'POST', body: JSON.stringify({ paths }) }) })
 export const useAutoscanClear = () =>
   useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/autoscan/clear', { method: 'POST' }) })
+export const useAutoscanDeleteScan = () =>
+  useMutation<{ ok: boolean }, Error, number>({ mutationFn: (id) => request(`/autoscan/scans/${id}`, { method: 'DELETE' }) })
 export const useAutoscanPause = () =>
   useMutation<{ ok: boolean; paused: boolean }, Error, boolean>({ mutationFn: (pause) => request(`/autoscan/${pause ? 'pause' : 'resume'}`, { method: 'POST' }) })
 export const useAutoscanSelfTest = () =>

@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanSelfTest, useAutoscanConnCheck, useAutoscanWire, type AutoscanConfig, type ScanStatus, type InboundHook, type SelfTestResult, type ConnLink, type WireResult } from '@/lib/api'
+import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanSelfTest, useAutoscanConnCheck, useAutoscanWire, useAutoscanDeleteScan, type AutoscanConfig, type ScanStatus, type InboundHook, type SelfTestResult, type ConnLink, type WireResult } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -41,6 +41,8 @@ export function AutoscanPanel() {
   const { data: status } = useAutoscanStatus()
   const trigger = useAutoscanTrigger()
   const clear = useAutoscanClear()
+  const delScan = useAutoscanDeleteScan()
+  const deleteRow = (id: number) => delScan.mutate(id, { onSuccess: () => qc.invalidateQueries({ queryKey: ['autoscan-status'] }) })
   const pause = useAutoscanPause()
   const togglePause = () => pause.mutate(!status?.paused, { onSuccess: () => qc.invalidateQueries({ queryKey: ['autoscan-status'] }) })
 
@@ -209,6 +211,7 @@ export function AutoscanPanel() {
                 <span className="w-32 shrink-0">Trigger</span>
                 <span className="w-36 shrink-0">Status</span>
                 <span className="w-32 shrink-0 text-right">Created</span>
+                <span className="w-7 shrink-0" />
               </div>
               <div className="max-h-[52vh] divide-y divide-border overflow-y-auto">
                 {rows.length === 0 && <div className="px-4 py-10 text-center text-xs text-muted-foreground">No scans found. Trigger one below, wire an *arr webhook (Settings tab), or enable scan-after-upload.</div>}
@@ -219,7 +222,7 @@ export function AutoscanPanel() {
                     <div key={r.id}>
                       <div className={cn('flex items-center gap-3 px-3 py-1.5 text-sm', hits.length > 0 && 'cursor-pointer hover:bg-muted/40')} onClick={() => hits.length > 0 && setOpenRows((o) => ({ ...o, [r.id]: !o[r.id] }))}>
                         <span className="w-3.5 shrink-0 text-muted-foreground">{hits.length > 0 && (open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />)}</span>
-                        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={r.error || r.path}>{r.path}{r.section && <span className="text-muted-foreground/70"> §{r.section}</span>}</span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground" title={r.error || r.path}>{r.path}{r.section && <span className="text-muted-foreground/70"> · {r.section}</span>}</span>
                         <span className="flex w-32 shrink-0 items-center gap-1.5">
                           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{r.source || '—'}</span>
                           {r.event && <span className="truncate text-[10px] text-muted-foreground/70">{r.event}</span>}
@@ -235,17 +238,31 @@ export function AutoscanPanel() {
                           {r.status === 'scanning' && r.started_at && <span className="text-[10px] tabular-nums text-muted-foreground">{Math.max(0, Math.floor((now - new Date(r.started_at).getTime()) / 1000))}s</span>}
                         </span>
                         <span className="w-32 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{new Date(r.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                        <span className="flex w-7 shrink-0 justify-end">
+                          <button type="button" title="Delete this row" className="text-muted-foreground/40 transition-colors hover:text-destructive" onClick={(e) => { e.stopPropagation(); deleteRow(r.id) }}><Trash2 className="h-3.5 w-3.5" /></button>
+                        </span>
                       </div>
                       {open && hits.length > 0 && (
-                        <div className="space-y-1 border-t border-border/50 bg-secondary/20 px-3 py-2 pl-8">
-                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Webhook events ({hits.length})</p>
-                          {hits.map((h, i) => (
-                            <div key={i} className="flex items-center gap-2 text-[11px]">
-                              <span className="w-16 shrink-0 tabular-nums text-muted-foreground/70">{new Date(h.time).toLocaleTimeString()}</span>
-                              <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{h.source}{h.event ? ` · ${h.event}` : ''}</span>
-                              <span className="min-w-0 flex-1 truncate font-mono text-foreground/80" title={h.path}>{h.path}</span>
-                            </div>
-                          ))}
+                        <div className="space-y-2 border-t border-border/50 bg-secondary/20 px-3 py-2 pl-8">
+                          {/* path trace: what the *arr sent → what we scan → the Plex target */}
+                          <div className="space-y-0.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Scan target</p>
+                            <p className="text-[11px]"><span className="inline-block w-16 text-muted-foreground/70">Original</span><span className="font-mono text-foreground/80">{hits[0].path}</span></p>
+                            <p className="text-[11px]"><span className="inline-block w-16 text-muted-foreground/70">Scanned</span><span className="font-mono text-foreground/80">{r.path}</span></p>
+                            <p className="text-[11px]"><span className="inline-block w-16 text-muted-foreground/70">Plex</span>{r.section
+                              ? <span className="text-success">{r.section} library <span className="font-mono text-foreground/80">{r.path}</span></span>
+                              : <span className="text-muted-foreground">{r.error || 'no section matched'}</span>}</p>
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Webhook events ({hits.length})</p>
+                            {hits.map((h, i) => (
+                              <div key={i} className="flex items-center gap-2 text-[11px]">
+                                <span className="w-16 shrink-0 tabular-nums text-muted-foreground/70">{new Date(h.time).toLocaleTimeString()}</span>
+                                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">{h.source}{h.event ? ` · ${h.event}` : ''}</span>
+                                <span className="min-w-0 flex-1 truncate font-mono text-foreground/80" title={h.path}>{h.path}</span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </div>

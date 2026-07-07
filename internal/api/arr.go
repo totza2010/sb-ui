@@ -289,7 +289,7 @@ func arrPlexRefresh(w http.ResponseWriter, req *http.Request) {
 	if plexVideoExtRE.MatchString(plexPath) {
 		plexPath = path.Dir(plexPath)
 	}
-	secID, ok := plexSectionForPath(cfg, plexPath)
+	secID, _, ok := plexSectionForPath(cfg, plexPath)
 	if !ok {
 		http.Error(w, "no Plex section matches "+plexPath+" — add a path mapping", http.StatusBadRequest)
 		return

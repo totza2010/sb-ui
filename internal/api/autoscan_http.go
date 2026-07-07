@@ -210,6 +210,16 @@ func autoscanClear(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// autoscanDeleteScan removes a single history row by id.
+func autoscanDeleteScan(w http.ResponseWriter, req *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(req, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": autoscanSvc().deleteRecord(id)})
+}
+
 // autoscanPause / autoscanResume let other subsystems (and the UI) hold the scan
 // queue — e.g. the uploader holds scans while it moves files, then releases.
 func autoscanPause(w http.ResponseWriter, _ *http.Request) {

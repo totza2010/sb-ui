@@ -110,7 +110,7 @@ func TestAutoscanFireCompleted(t *testing.T) {
 
 	var gotSection, gotPath string
 	prevScan, prevSection := autoscanScanFn, autoscanSectionFn
-	autoscanSectionFn = func(_ plexConfig, _ string) (string, bool) { return "3", true }
+	autoscanSectionFn = func(_ plexConfig, _ string) (string, string, bool) { return "3", "TV", true }
 	autoscanScanFn = func(_ plexConfig, section, p string) error { gotSection, gotPath = section, p; return nil }
 	t.Cleanup(func() { autoscanScanFn, autoscanSectionFn = prevScan, prevSection })
 
@@ -123,8 +123,8 @@ func TestAutoscanFireCompleted(t *testing.T) {
 		t.Fatalf("scan called with (%q,%q), want (\"3\",%q)", gotSection, gotPath, key)
 	}
 	recs := s.recentScans()
-	if len(recs) != 1 || recs[0].Status != scanCompleted || recs[0].Section != "3" {
-		t.Fatalf("want 1 completed record §3, got %+v", recs)
+	if len(recs) != 1 || recs[0].Status != scanCompleted || recs[0].Section != "TV" {
+		t.Fatalf("want 1 completed record in library \"TV\", got %+v", recs)
 	}
 	if recs[0].StartedAt == nil || recs[0].EndedAt == nil {
 		t.Fatalf("expected started/ended timestamps set")
@@ -159,7 +159,7 @@ func TestAutoscanPauseHold(t *testing.T) {
 	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})
 	scanned := false
 	prevScan, prevSection := autoscanScanFn, autoscanSectionFn
-	autoscanSectionFn = func(plexConfig, string) (string, bool) { return "1", true }
+	autoscanSectionFn = func(plexConfig, string) (string, string, bool) { return "1", "TV", true }
 	autoscanScanFn = func(plexConfig, string, string) error { scanned = true; return nil }
 	t.Cleanup(func() { autoscanScanFn, autoscanSectionFn = prevScan, prevSection })
 
@@ -235,7 +235,7 @@ func TestAutoscanSerializesScans(t *testing.T) {
 	noThrottle(t)
 	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})
 	prevScan, prevSection := autoscanScanFn, autoscanSectionFn
-	autoscanSectionFn = func(plexConfig, string) (string, bool) { return "1", true }
+	autoscanSectionFn = func(plexConfig, string) (string, string, bool) { return "1", "TV", true }
 	started := make(chan string, 4)
 	release := make(chan struct{})
 	autoscanScanFn = func(_ plexConfig, _, key string) error {
@@ -325,7 +325,7 @@ func TestAutoscanFireSkipped(t *testing.T) {
 	noThrottle(t)
 	setOptForTest(t, optionsConfig{Plex: plexConfig{URL: "http://plex:32400"}, Autoscan: autoscanConfig{DelaySec: 3600}})
 	prev := autoscanSectionFn
-	autoscanSectionFn = func(_ plexConfig, _ string) (string, bool) { return "", false }
+	autoscanSectionFn = func(_ plexConfig, _ string) (string, string, bool) { return "", "", false }
 	t.Cleanup(func() { autoscanSectionFn = prev })
 
 	s := newAutoscanService()

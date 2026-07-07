@@ -439,7 +439,7 @@ func (s *autoscanService) fire(key string) {
 		s.setStatus(id, scanFailed, "", "Plex not configured", false)
 		return
 	}
-	secID, ok := autoscanSectionFn(cfg, key)
+	secID, secName, ok := autoscanSectionFn(cfg, key)
 	if !ok {
 		s.setStatus(id, scanSkipped, "", "no Plex section matches — add a path mapping", false)
 		return
@@ -476,14 +476,14 @@ func (s *autoscanService) fire(key string) {
 	}
 	s.mu.Unlock()
 
-	s.setStatus(id, scanScanning, secID, "", true)
-	switch err := autoscanScanFn(cfg, secID, key); {
+	s.setStatus(id, scanScanning, secName, "", true) // store the library name for display
+	switch err := autoscanScanFn(cfg, secID, key); {  // secID (key) drives the actual scan
 	case err != nil:
-		s.setStatus(id, scanFailed, secID, err.Error(), false)
+		s.setStatus(id, scanFailed, "", err.Error(), false)
 	case ac.WaitCompletion:
 		s.waitComplete(id, secID, cfg, ac) // poll Plex until it actually finishes
 	default:
-		s.setStatus(id, scanCompleted, secID, "", false)
+		s.setStatus(id, scanCompleted, "", "", false)
 	}
 }
 
@@ -518,7 +518,7 @@ func (s *autoscanService) waitComplete(id int64, secID string, cfg plexConfig, a
 			break
 		}
 	}
-	s.setStatus(id, scanCompleted, secID, "", false)
+	s.setStatus(id, scanCompleted, "", "", false) // keep the library name set at scan start
 }
 
 func (s *autoscanService) setStatus(id int64, st scanStatus, section, errMsg string, starting bool) {
@@ -575,4 +575,38 @@ func (s *autoscanService) clear() {
 	snap := s.snapshotLocked()
 	s.mu.Unlock()
 	autoscanSaveFn(snap)
+}
+
+// deleteRecord removes one history row by id (a queued scan is also de-queued so it
+// won't fire). Returns whether a record was found.
+func (s *autoscanService) deleteRecord(id int64) bool {
+	s.mu.Lock()
+	found := false
+	out := s.records[:0]
+	for _, r := range s.records {
+		if r.ID == id {
+			found = true
+			continue
+		}
+		out = append(out, r)
+	}
+	s.records = out
+	if found { // if it was still queued, stop its timer + drop it from the active set
+		for key, aid := range s.active {
+			if aid == id {
+				if t := s.timers[key]; t != nil {
+					t.Stop()
+					delete(s.timers, key)
+				}
+				delete(s.active, key)
+				break
+			}
+		}
+	}
+	snap := s.snapshotLocked()
+	s.mu.Unlock()
+	if found {
+		autoscanSaveFn(snap)
+	}
+	return found
 }

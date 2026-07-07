@@ -123,6 +123,7 @@ func Mount(r chi.Router) {
 	r.Post("/api/autoscan/connections/check", autoscanConnCheck) // active arr-API health probe
 	r.Post("/api/autoscan/connections/wire", autoscanWire)       // set + test the webhook via arr API
 	r.Post("/api/autoscan/clear", autoscanClear)
+	r.Delete("/api/autoscan/scans/{id}", autoscanDeleteScan)
 	r.Post("/api/autoscan/pause", autoscanPause)
 	r.Post("/api/autoscan/resume", autoscanResume)
 	r.Get("/api/autoscan/config", autoscanGetConfig)

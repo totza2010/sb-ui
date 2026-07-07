@@ -238,16 +238,16 @@ func plexSectionScanning(cfg plexConfig, sectionKey string) bool {
 
 // plexSectionForPath returns the section whose root location is the longest prefix
 // of the given (Plex-side) path.
-func plexSectionForPath(cfg plexConfig, p string) (string, bool) {
-	best, key := -1, ""
+func plexSectionForPath(cfg plexConfig, p string) (key, title string, ok bool) {
+	best := -1
 	for _, s := range plexSections(cfg) {
 		for _, loc := range s.Locations {
 			if loc != "" && len(loc) > best && strings.HasPrefix(p, loc) {
-				best, key = len(loc), s.Key
+				best, key, title = len(loc), s.Key, s.Title
 			}
 		}
 	}
-	return key, best >= 0
+	return key, title, best >= 0
 }
 
 // ── items / episodes (plexgo — the primary client) ──
