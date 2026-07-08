@@ -43,7 +43,8 @@ type connLink struct {
 	LastEvent  string     `json:"last_event,omitempty"`
 	LastResult string     `json:"last_result,omitempty"`
 	Hits       int        `json:"hits"`
-	Matched    bool       `json:"matched"` // linked to a discovered arr we can actively probe
+	Matched    bool       `json:"matched"`          // linked to a discovered arr we can actively probe
+	Manual     bool       `json:"manual,omitempty"` // user-added (not auto-discovered)
 	// active probe (sb-ui → arr API)
 	Health     string     `json:"health"` // ok | fail | unknown
 	HealthAt   *time.Time `json:"health_at,omitempty"`
@@ -346,6 +347,41 @@ func (r *connRegistry) list() []connLink {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.snapshotLocked()
+}
+
+// manualArr is a user-registered *arr sb-ui can't auto-discover (different host).
+// Persisted with its API key for future probe/wire integration.
+type manualArr struct {
+	Source string `json:"source"`
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	APIKey string `json:"api_key"`
+}
+
+const autoscanManualRel = "cache/autoscan_manual_arrs.json"
+
+// addManual registers a manually-entered *arr: it persists the full entry (incl. API key)
+// and shows a display row in the registry. NOTE (scaffold): active probing + Wire of
+// manual entries isn't wired up yet — Health stays "unknown" until that lands.
+func (r *connRegistry) addManual(source, name, url, apiKey string) {
+	var list []manualArr
+	store.ReadJSON(autoscanManualRel, &list)
+	list = append(list, manualArr{Source: strings.ToLower(source), Name: name, URL: url, APIKey: apiKey})
+	store.WriteJSON(autoscanManualRel, list)
+
+	key := connKey(source, name, "")
+	r.mu.Lock()
+	l := r.byKeyLocked(key)
+	if l == nil {
+		l = &connLink{Key: key, Source: strings.ToLower(source), Health: "unknown", FirstSeen: time.Now()}
+		r.links = append(r.links, l)
+	}
+	l.Instance = name
+	l.ProbeURL = url
+	l.Manual = true
+	l.Matched = true // treat as a real arr (not an "unknown sender")
+	r.persistLocked()
+	r.mu.Unlock()
 }
 
 func (r *connRegistry) clear() {

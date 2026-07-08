@@ -5,13 +5,14 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanSelfTest, useAutoscanConnCheck, useAutoscanWire, useAutoscanDeleteScan, type AutoscanConfig, type ScanStatus, type InboundHook, type SelfTestResult, type ConnLink, type WireResult } from '@/lib/api'
+import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanConnCheck, useAutoscanWire, useAutoscanDeleteScan, useAutoscanManualAdd, type AutoscanConfig, type ScanStatus, type ConnLink, type WireResult } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/cn'
 import { ScanLine, Save, Copy, Check, RefreshCw, Play, Pause, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, ChevronRight, Plus, X, FolderInput, SlidersHorizontal } from 'lucide-react'
 import { PathPicker } from '@/components/PathPicker'
@@ -71,6 +72,13 @@ export function AutoscanPanel() {
   const localURL = tok ? `http://localhost:${port}/api/autoscan/webhook/${tok}` : ''
   const remoteBase = `http://${window.location.hostname}:${port}/api/autoscan/webhook`
   const [copiedKey, setCopiedKey] = useState('')
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
+  const [manualArr, setManualArr] = useState({ source: 'sonarr', name: '', url: '', api_key: '' })
+  const manualAdd = useAutoscanManualAdd()
+  const submitManual = () => manualAdd.mutate(manualArr, {
+    onSuccess: () => { setAddOpen(false); setManualArr({ source: 'sonarr', name: '', url: '', api_key: '' }); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) },
+  })
   const copyText = (s: string, key = 's') => { if (!s) return; navigator.clipboard.writeText(s); setCopiedKey(key); setTimeout(() => setCopiedKey(''), 1500) }
   const runTest = () => { const p = testPath.trim(); if (p) trigger.mutate([p], { onSuccess: () => { setTestPath(''); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) } }) }
 
@@ -93,43 +101,6 @@ export function AutoscanPanel() {
       onError: (e) => setWireResults((m) => ({ ...m, [key]: { ok: false, error: e.message } })),
     })
   }
-
-  const selfTest = useAutoscanSelfTest()
-  const [testResult, setTestResult] = useState<SelfTestResult | null>(null)
-  const runSelfTest = () => selfTest.mutate(undefined, {
-    onSuccess: (r) => { setTestResult(r); qc.invalidateQueries({ queryKey: ['autoscan-status'] }) },
-    onError: (e) => setTestResult({ ok: false, url: '', error: e.message }),
-  })
-
-  // "Listen for *arr" — arm a wait, then the user clicks Test in Sonarr/Radarr; we
-  // capture the next real inbound webhook and show exactly how we replied. While armed
-  // we poll status fast so the hit shows within ~1.5s.
-  const LISTEN_MS = 90_000
-  const [listening, setListening] = useState(false)
-  const [captured, setCaptured] = useState<InboundHook | null>(null)
-  const [listenTimedOut, setListenTimedOut] = useState(false)
-  const baselineAt = useRef<string | null>(null)
-  const listenStart = useRef(0)
-  const startListen = () => {
-    baselineAt.current = status?.last_inbound?.at ?? null
-    listenStart.current = Date.now()
-    setCaptured(null)
-    setListenTimedOut(false)
-    setListening(true)
-  }
-  const lastAt = status?.last_inbound?.at
-  useEffect(() => { // a fresh inbound arrived while armed → capture it
-    if (listening && status?.last_inbound && lastAt !== baselineAt.current) {
-      setCaptured(status.last_inbound)
-      setListening(false)
-    }
-  }, [lastAt]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { // poll fast + time out while armed
-    if (!listening) return
-    if (Date.now() - listenStart.current > LISTEN_MS) { setListening(false); setListenTimedOut(true); return }
-    const t = setInterval(() => qc.invalidateQueries({ queryKey: ['autoscan-status'] }), 1500)
-    return () => clearInterval(t)
-  }, [listening, now]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const counts = status?.counts ?? { pending: 0, scanning: 0, completed: 0, skipped: 0, failed: 0, ignored: 0 }
   const scans = status?.scans ?? []
@@ -368,129 +339,111 @@ export function AutoscanPanel() {
 
         {/* ── Webhook ──────────────────────────────────────────────── */}
         <TabsContent value="webhook" className="space-y-4">
-          <div className="grid gap-4 lg:grid-cols-2">
-            {/* left: webhook URLs + auth + live connection test */}
-            <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
-          <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Sonarr / Radarr webhook</p>
-          <p className="text-[11px] text-muted-foreground">In each *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, tick On Import / On Rename / On Upgrade, then paste a URL below. These hit sb-ui's port <span className="font-mono text-foreground">:{port}</span> directly (skips the Traefik/Authelia front).</p>
-
-          <div className="space-y-2">
-            {([['remote', 'Remote', `via ${window.location.hostname} — for *arr on another host`, remoteURL], ['local', 'Local', 'for *arr on the same host as sb-ui', localURL]] as const).map(([key, label, hint, url]) => (
-              <div key={key} className="space-y-0.5">
-                <p className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground">{label}</span> — {hint}</p>
-                <div className="flex gap-1.5">
-                  <Input readOnly className="h-8 font-mono text-xs" value={url} placeholder="save to generate a URL" onFocus={(e) => e.currentTarget.select()} />
-                  <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Copy" onClick={() => copyText(url, key)} disabled={!url}>{copiedKey === key ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}</Button>
-                  {key === 'remote' && <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Regenerate token" onClick={regenToken} disabled={save.isPending}><RefreshCw className={cn('h-3.5 w-3.5', save.isPending && 'animate-spin')} /></Button>}
-                </div>
+          <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Known connections <span className="font-normal text-muted-foreground">— *arr webhooks &amp; API health</span></p>
+              <div className="flex items-center gap-1.5">
+                <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={() => setAddOpen(true)}><Plus className="h-3.5 w-3.5" />Add manually</Button>
+                <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={() => setSetupOpen(true)}><SlidersHorizontal className="h-3.5 w-3.5" />Webhook setup</Button>
+                <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={checkConns} disabled={connCheck.isPending}>{connCheck.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Check now</Button>
               </div>
-            ))}
-          </div>
-
-          <div className="space-y-1 rounded-md border border-border bg-secondary/20 p-2 text-[10px] text-muted-foreground">
-            <p className="text-foreground">Authenticate any of these ways:</p>
-            <p>• <span className="text-foreground">Paste a URL above</span> — token is in the path (simplest).</p>
-            <p>• Base URL <span className="font-mono text-foreground">{remoteBase}</span> + token in the <span className="font-mono text-foreground">X-API-Key</span> header (or <span className="font-mono">?apikey=</span>).</p>
-            <p>• <span className="text-foreground">Username/Password</span> in *arr: username = anything, <span className="text-foreground">password = the token</span>.</p>
-            <p className="flex items-center gap-1.5 pt-0.5">Token: <span className="min-w-0 flex-1 truncate font-mono text-foreground">{cfg.webhook_token || '—'}</span>
-              <button type="button" className="shrink-0 text-primary hover:underline" onClick={() => copyText(cfg.webhook_token || '', 'tok')}>{copiedKey === 'tok' ? 'copied' : 'copy'}</button>
-            </p>
-            <p className="text-muted-foreground/70">Port <span className="font-mono">:{port}</span> must be reachable from your *arr (open host firewall if needed). Regenerating the token invalidates old URLs.</p>
-          </div>
-
-          {/* triggers — which *arr Connection events "Wire & test" enables */}
-          <div className="space-y-1.5 rounded-md border border-border p-2.5">
-            <p className="text-[11px] font-medium text-foreground">Triggers to enable when wiring <span className="font-normal text-muted-foreground">— which *arr events fire the webhook</span></p>
-            <div className="flex flex-wrap gap-1.5">
-              {TRIGGERS.map((t) => {
-                const on = (cfg.webhook_events ?? DEFAULT_TRIGGERS).includes(t.key)
-                return (
-                  <button
-                    key={t.key}
-                    type="button"
-                    onClick={() => up('webhook_events', toggle(cfg.webhook_events ?? DEFAULT_TRIGGERS, t.key))}
-                    className={cn('rounded-md border px-2 py-1 text-[11px] font-medium transition-colors', on ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:text-foreground')}
-                  >
-                    {t.label}
-                  </button>
-                )
-              })}
             </div>
-            <p className="text-[10px] text-muted-foreground/70">Applied on the next “Wire &amp; test”. Delete = remove from Plex when a file is deleted.</p>
-          </div>
-
-          {/* connection — arm a wait for the *arr's Test, then capture how we replied */}
-          <div className="space-y-2.5 rounded-md border border-border p-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] font-medium text-foreground">Connection</p>
-              {listening
-                ? <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={() => setListening(false)}><X className="h-3.5 w-3.5" />Cancel</Button>
-                : <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={startListen} disabled={!cfg.webhook_token}><Webhook className="h-3.5 w-3.5" />Listen for *arr test</Button>}
-            </div>
-
-            {listening ? (
-              <div className="rounded border border-primary/40 bg-primary/5 p-2.5 text-[10px]">
-                <p className="flex items-center gap-1.5 font-medium text-primary"><Loader2 className="h-3.5 w-3.5 animate-spin" />Waiting for a webhook from your *arr…</p>
-                <p className="mt-1 text-muted-foreground">Now open <span className="text-foreground">Sonarr / Radarr → Settings → Connect → your Webhook</span> and click <span className="text-foreground">Test</span>. The moment it hits us, the result shows here.</p>
-                <p className="mt-1 text-muted-foreground/70">Listening for {Math.max(0, Math.ceil((LISTEN_MS - (now - listenStart.current)) / 1000))}s · make sure the URL points at <span className="font-mono">:{port}</span>.</p>
-              </div>
-            ) : captured ? (
-              <CapturedInbound hook={captured} now={now} />
-            ) : listenTimedOut ? (
-              <div className="rounded border border-warning/40 bg-warning/5 p-2.5 text-[10px]">
-                <p className="flex items-center gap-1.5 font-medium text-warning"><XCircle className="h-3.5 w-3.5" />No webhook arrived within 90s.</p>
-                <p className="mt-1 text-muted-foreground">The *arr never reached us — check the URL/port in its Webhook connection, and that <span className="font-mono">:{port}</span> is reachable (firewall / DNS / different host). Use “Test endpoint” below to confirm sb-ui itself is listening.</p>
-              </div>
+            {conns.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">No connections yet. Discovered *arr appear after the first health check; webhook senders appear once they hit the endpoint. Use <span className="text-foreground">Add manually</span> for an *arr sb-ui can't reach.</p>
             ) : (
-              <InboundIndicator hook={status?.last_inbound} now={now} />
-            )}
-
-            {/* secondary: loopback self-test — confirms our own endpoint + token */}
-            <div className="flex items-center justify-between gap-2 border-t border-border/60 pt-2">
-              <p className="text-[10px] text-muted-foreground">Or verify sb-ui's own endpoint (no *arr needed):</p>
-              <Button size="sm" variant="ghost" className="h-6 gap-1.5 px-2 text-[11px]" onClick={runSelfTest} disabled={selfTest.isPending || !cfg.webhook_token}>
-                {selfTest.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Zap className="h-3.5 w-3.5" />}Test endpoint
-              </Button>
-            </div>
-            {testResult && (
-              <div className={cn('rounded border p-2 text-[10px]', testResult.ok ? 'border-success/40 bg-success/5' : 'border-destructive/40 bg-destructive/5')}>
-                <p className={cn('flex items-center gap-1.5 font-medium', testResult.ok ? 'text-success' : 'text-destructive')}>
-                  {testResult.ok ? <CheckCircle2 className="h-3.5 w-3.5" /> : <XCircle className="h-3.5 w-3.5" />}
-                  {testResult.ok ? 'Endpoint reachable — auth OK' : 'Self-test failed'}
-                  {testResult.status != null && <span className="font-normal text-muted-foreground">· HTTP {testResult.status}</span>}
-                  {testResult.latency_ms != null && <span className="font-normal text-muted-foreground">· {testResult.latency_ms}ms</span>}
-                </p>
-                {testResult.error && <p className="mt-0.5 break-all text-muted-foreground">{testResult.error}</p>}
-                <p className="mt-1 text-muted-foreground/70">This only proves sb-ui is listening on <span className="font-mono">:{port}</span>. If it passes but the *arr still can't connect, the problem is network reachability from the *arr (firewall / DNS / different host).</p>
+              <div className="space-y-3">
+                {groupConns(conns).map(([source, rows]) => (
+                  <div key={source} className="space-y-1.5">
+                    <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{sourceLabel(source)}<span className="font-normal text-muted-foreground/60">{rows.length}</span></p>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{rows.map((c) => <ConnRow key={c.key} c={c} now={now} onWire={wireConn} wiring={wiringKey === c.key} result={wireResults[c.key]} />)}</div>
+                  </div>
+                ))}
               </div>
             )}
-          </div>
+            <p className="text-[10px] text-muted-foreground/70">Inbound = arr → sb-ui (webhooks). API = sb-ui → arr (every 60s). Healthy when both work; “dropped” = API no longer reachable. <span className="text-foreground">Wire &amp; test</span> configures the webhook in each *arr automatically.</p>
+          </Card>
 
-            </Card>
+          {/* webhook setup modal — triggers + manual URLs + auth (fallback reference) */}
+          <Dialog open={setupOpen} onOpenChange={setSetupOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="flex items-center gap-1.5 text-sm"><Webhook className="h-4 w-4" />Webhook setup</DialogTitle></DialogHeader>
+              <div className="space-y-3">
+                <p className="text-[11px] text-muted-foreground"><span className="font-medium text-foreground">Recommended:</span> use <span className="text-foreground">Wire &amp; test</span> on each connection — it configures the *arr automatically. The URLs below are a fallback for an *arr sb-ui can't reach.</p>
 
-            {/* right: known connections registry — inbound + API health, re-checked every 60s */}
-            <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-2">
-                <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Webhook className="h-4 w-4 text-muted-foreground" />Known connections <span className="font-normal text-muted-foreground">— inbound &amp; API health</span></p>
-                <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={checkConns} disabled={connCheck.isPending}>
-                  {connCheck.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Check now
-                </Button>
-              </div>
-              {conns.length === 0 ? (
-                <p className="rounded-md border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">No connections yet. Discovered *arr appear after the first health check; webhook senders appear once they hit the endpoint.</p>
-              ) : (
-                <div className="space-y-3">
-                  {groupConns(conns).map(([source, rows]) => (
-                    <div key={source} className="space-y-1.5">
-                      <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{sourceLabel(source)}<span className="font-normal text-muted-foreground/60">{rows.length}</span></p>
-                      <div className="grid gap-2 sm:grid-cols-2">{rows.map((c) => <ConnRow key={c.key} c={c} now={now} onWire={wireConn} wiring={wiringKey === c.key} result={wireResults[c.key]} />)}</div>
+                <div className="space-y-1.5 rounded-md border border-border p-2.5">
+                  <p className="text-[11px] font-medium text-foreground">Triggers to enable when wiring <span className="font-normal text-muted-foreground">— which *arr events fire the webhook</span></p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {TRIGGERS.map((t) => {
+                      const on = (cfg.webhook_events ?? DEFAULT_TRIGGERS).includes(t.key)
+                      return (
+                        <button key={t.key} type="button" onClick={() => up('webhook_events', toggle(cfg.webhook_events ?? DEFAULT_TRIGGERS, t.key))} className={cn('rounded-md border px-2 py-1 text-[11px] font-medium transition-colors', on ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:text-foreground')}>{t.label}</button>
+                      )
+                    })}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/70">Applied on the next “Wire &amp; test”. Delete = remove from Plex when a file is deleted.</p>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-[11px] text-muted-foreground">In the *arr: <span className="text-foreground">Settings → Connect → Webhook</span>, then paste a URL. These hit sb-ui's port <span className="font-mono text-foreground">:{port}</span> directly. <span className="font-mono">localhost</span> only works for an *arr on this same host — a container usually needs the host's LAN IP.</p>
+                  {([['remote', 'Remote', `via ${window.location.hostname} — for *arr on another host`, remoteURL], ['local', 'Local', 'for *arr on the same host as sb-ui', localURL]] as const).map(([key, label, hint, url]) => (
+                    <div key={key} className="space-y-0.5">
+                      <p className="text-[10px] text-muted-foreground"><span className="font-medium text-foreground">{label}</span> — {hint}</p>
+                      <div className="flex gap-1.5">
+                        <Input readOnly className="h-8 font-mono text-xs" value={url} placeholder="save to generate a URL" onFocus={(e) => e.currentTarget.select()} />
+                        <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Copy" onClick={() => copyText(url, key)} disabled={!url}>{copiedKey === key ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}</Button>
+                        {key === 'remote' && <Button size="icon" variant="outline" className="h-8 w-8 shrink-0" title="Regenerate token" onClick={regenToken} disabled={save.isPending}><RefreshCw className={cn('h-3.5 w-3.5', save.isPending && 'animate-spin')} /></Button>}
+                      </div>
                     </div>
                   ))}
                 </div>
-              )}
-              <p className="text-[10px] text-muted-foreground/70">Inbound = arr → sb-ui (webhooks). API = sb-ui → arr (every 60s). Healthy when both work; “dropped” = API no longer reachable.</p>
-            </Card>
-          </div>
+
+                <div className="space-y-1 rounded-md border border-border bg-secondary/20 p-2 text-[10px] text-muted-foreground">
+                  <p className="text-foreground">Authenticate any of these ways:</p>
+                  <p>• <span className="text-foreground">Paste a URL above</span> — token is in the path (simplest).</p>
+                  <p>• Base URL <span className="font-mono text-foreground">{remoteBase}</span> + token in the <span className="font-mono text-foreground">X-API-Key</span> header (or <span className="font-mono">?apikey=</span>).</p>
+                  <p>• <span className="text-foreground">Username/Password</span> in *arr: username = anything, <span className="text-foreground">password = the token</span>.</p>
+                  <p className="flex items-center gap-1.5 pt-0.5">Token: <span className="min-w-0 flex-1 truncate font-mono text-foreground">{cfg.webhook_token || '—'}</span>
+                    <button type="button" className="shrink-0 text-primary hover:underline" onClick={() => copyText(cfg.webhook_token || '', 'tok')}>{copiedKey === 'tok' ? 'copied' : 'copy'}</button>
+                  </p>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* add-manually modal — register an *arr sb-ui can't auto-discover (scaffold) */}
+          <Dialog open={addOpen} onOpenChange={setAddOpen}>
+            <DialogContent className="max-w-md">
+              <DialogHeader><DialogTitle className="flex items-center gap-1.5 text-sm"><Plus className="h-4 w-4" />Add an *arr manually</DialogTitle></DialogHeader>
+              <div className="space-y-3">
+                <p className="text-[11px] text-muted-foreground">For an *arr sb-ui can't auto-discover (on a different host). Enter its API details so we can probe + wire it.</p>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Type</Label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(['sonarr', 'radarr', 'whisparr'] as const).map((s) => (
+                      <button key={s} type="button" onClick={() => setManualArr((m) => ({ ...m, source: s }))} className={cn('rounded-md border px-2.5 py-1 text-[11px] font-medium capitalize transition-colors', manualArr.source === s ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:text-foreground')}>{s}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Name</Label>
+                  <Input className="h-8" placeholder="e.g. Sonarr 4K" value={manualArr.name} onChange={(e) => setManualArr((m) => ({ ...m, name: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">Base URL</Label>
+                  <Input className="h-8 font-mono text-xs" placeholder="http://192.168.1.50:8989" value={manualArr.url} onChange={(e) => setManualArr((m) => ({ ...m, url: e.target.value }))} />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[11px]">API key</Label>
+                  <Input className="h-8 font-mono text-xs" placeholder="from the arr's Settings → General" value={manualArr.api_key} onChange={(e) => setManualArr((m) => ({ ...m, api_key: e.target.value }))} />
+                </div>
+                {manualAdd.isError && <p className="text-[11px] text-destructive">{(manualAdd.error as Error).message}</p>}
+                <div className="flex justify-end gap-1.5 pt-1">
+                  <Button size="sm" variant="ghost" className="h-8" onClick={() => setAddOpen(false)}>Cancel</Button>
+                  <Button size="sm" className="h-8 gap-1.5" onClick={submitManual} disabled={manualAdd.isPending || !manualArr.url || !manualArr.api_key}>{manualAdd.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}Add</Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
         </TabsContent>
       </Tabs>
     </div>
@@ -590,66 +543,12 @@ function PathList({ value, onChange, placeholder, disks, multi }: {
 const STAT_TONE: Record<string, string> = {
   pending: 'text-warning', scanning: 'text-primary', completed: 'text-success', failed: 'text-destructive',
 }
-// INBOUND_META colours the result of the last webhook the endpoint received.
-const INBOUND_META: Record<string, { cls: string; Icon: typeof Clock; label: string }> = {
-  accepted: { cls: 'text-success', Icon: CheckCircle2, label: 'accepted' },
-  test: { cls: 'text-success', Icon: CheckCircle2, label: 'test OK' },
-  ignored: { cls: 'text-muted-foreground', Icon: MinusCircle, label: 'ignored' },
-  disabled: { cls: 'text-warning', Icon: MinusCircle, label: 'autoscan off' },
-  unauthorized: { cls: 'text-destructive', Icon: XCircle, label: 'auth failed' },
-}
 function fmtAgo(iso: string, now: number): string {
   const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000))
   if (s < 60) return `${s}s ago`
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
-}
-function InboundIndicator({ hook, now }: { hook?: InboundHook | null; now: number }) {
-  if (!hook) return (
-    <p className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-      <Webhook className="h-3.5 w-3.5" />No webhook received yet — nothing has hit this endpoint since the last restart.
-    </p>
-  )
-  const m = INBOUND_META[hook.result] ?? { cls: 'text-muted-foreground', Icon: Webhook, label: hook.result }
-  return (
-    <div className="text-[10px]">
-      <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-        <span className="text-muted-foreground">Last inbound:</span>
-        <span className={cn('inline-flex items-center gap-1 font-medium capitalize', m.cls)}><m.Icon className="h-3.5 w-3.5" />{m.label}</span>
-        <span className="font-medium text-foreground capitalize">{hook.source}</span>
-        {hook.event && <span className="text-muted-foreground">{hook.event}</span>}
-        <span className="text-muted-foreground/70">· {fmtAgo(hook.at, now)}</span>
-        {hook.remote && <span className="font-mono text-muted-foreground/70">· {hook.remote}</span>}
-      </p>
-      {hook.detail && <p className="mt-0.5 text-muted-foreground">{hook.detail}</p>}
-      {hook.result === 'unauthorized' && <p className="mt-0.5 text-destructive">The *arr reached us but the token/password was wrong — copy the token again or re-paste the URL.</p>}
-    </div>
-  )
-}
-
-// CapturedInbound is the big confirmation shown after "Listen for *arr" catches a hit —
-// it's the real webhook from the *arr and exactly how we replied.
-function CapturedInbound({ hook, now }: { hook: InboundHook; now: number }) {
-  const ok = hook.result !== 'unauthorized'
-  const m = INBOUND_META[hook.result] ?? { cls: 'text-muted-foreground', Icon: Webhook, label: hook.result }
-  return (
-    <div className={cn('rounded border p-2.5 text-[10px]', ok ? 'border-success/40 bg-success/5' : 'border-destructive/40 bg-destructive/5')}>
-      <p className={cn('flex items-center gap-1.5 text-[11px] font-medium', ok ? 'text-success' : 'text-destructive')}>
-        {ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
-        Received a webhook from <span className="capitalize">{hook.source}</span>{hook.event ? ` (${hook.event})` : ''}
-      </p>
-      <p className="mt-1 text-muted-foreground">
-        We replied <span className={cn('font-mono font-medium', ok ? 'text-success' : 'text-destructive')}>HTTP {hook.code ?? (ok ? 200 : 403)}</span>
-        <span className="capitalize"> · {m.label}</span>
-        <span className="text-muted-foreground/70"> · {fmtAgo(hook.at, now)}</span>
-        {hook.remote && <span className="font-mono text-muted-foreground/70"> · from {hook.remote}</span>}
-      </p>
-      {hook.detail && <p className="mt-0.5 text-muted-foreground">{hook.detail}</p>}
-      {!ok && <p className="mt-1 text-destructive">The *arr reached us but the token/password was wrong — re-copy the token or re-paste the URL, then listen again.</p>}
-      {ok && <p className="mt-1 text-muted-foreground/70">Connection confirmed — the *arr can reach sb-ui and we accept its webhooks.</p>}
-    </div>
-  )
 }
 
 // ConnRow renders one known *arr connection: its two health dimensions (API probe +
@@ -659,6 +558,16 @@ const HEALTH_META: Record<string, { cls: string; dot: string; Icon: typeof Clock
   fail: { cls: 'text-destructive', dot: 'bg-destructive', Icon: XCircle, label: 'API unreachable' },
   unknown: { cls: 'text-muted-foreground', dot: 'bg-muted-foreground/50', Icon: MinusCircle, label: 'not checked' },
 }
+// INBOUND_RESULT explains each last-webhook outcome (shown as a tooltip).
+const INBOUND_RESULT: Record<string, { label: string; desc: string }> = {
+  accepted: { label: 'accepted', desc: 'A real event — its paths were queued for a Plex scan.' },
+  test:     { label: 'test',     desc: "A test webhook (the arr's Connect → Test, or sb-ui's Wire test). Connection OK — nothing scanned." },
+  ignored:  { label: 'ignored',  desc: "An event we don't scan on (e.g. Grab, or a series-level rename with no file path)." },
+  disabled: { label: 'autoscan off', desc: 'Received while autoscan was disabled — acknowledged, not scanned.' },
+  unauthorized: { label: 'rejected (token)', desc: 'The arr reached us but the token/password was wrong.' },
+}
+const inboundResult = (r?: string) => INBOUND_RESULT[r ?? ''] ?? { label: r || 'received', desc: 'The last webhook this arr sent us.' }
+
 // groupConns splits the (already source-sorted) list into [source, rows] groups,
 // preserving order. sourceLabel/variantLabel format the app + its HD/UHD/AI variant.
 function groupConns(conns: ConnLink[]): [string, ConnLink[]][] {
@@ -694,19 +603,27 @@ function ConnRow({ c, now, onWire, wiring, result }: { c: ConnLink; now: number;
           <span className={cn('h-2 w-2 shrink-0 rounded-full', h.dot)} />
           <span className="truncate text-sm font-semibold text-foreground">{variantLabel(c)}</span>
           {c.instance && variantLabel(c).toLowerCase() !== c.instance.toLowerCase() && <span className="hidden truncate text-[10px] text-muted-foreground/60 sm:inline">{c.instance}</span>}
+          {c.manual && <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">manual</span>}
           {!c.matched && <span className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">unknown sender</span>}
         </div>
         <span className={cn('flex shrink-0 items-center gap-1 text-[11px] font-medium', h.cls)}><h.Icon className="h-3.5 w-3.5" />{h.label}</span>
       </div>
       <div className="mt-1.5 space-y-0.5 pl-4 text-[10px]">
         <p className="text-muted-foreground">
-          <span className="text-foreground">API</span> (sb-ui → arr): {c.health === 'ok' ? <span className="text-success">{c.health_note || 'ok'}</span> : c.health === 'fail' ? <span className="text-destructive">{c.health_note || 'unreachable'}</span> : <span>not checked yet</span>}
-          {c.health_at && <span className="text-muted-foreground/60"> · {fmtAgo(c.health_at, now)}</span>}
+          <span className="cursor-help font-medium text-foreground" title="sb-ui → arr: we call the arr's API (system/status) with its API key every 60s.">API</span>: {c.health === 'ok'
+            ? <span className="text-success" title="The arr's API answered.">{c.health_note || 'ok'}</span>
+            : c.health === 'fail'
+              ? <span className="text-destructive" title="We couldn't reach the arr's API.">{c.health_note || 'unreachable'}</span>
+              : <span>not checked yet</span>}
+          {c.health_at && <span className="text-muted-foreground/60" title={new Date(c.health_at).toLocaleString()}> · {fmtAgo(c.health_at, now)}</span>}
         </p>
         <p className="text-muted-foreground">
-          <span className="text-foreground">Inbound</span> (arr → sb-ui): {c.last_seen
-            ? <>{authFail ? <span className="text-destructive">rejected (token)</span> : <span className="text-success">{c.last_result || 'received'}</span>} · {fmtAgo(c.last_seen, now)} · {c.hits}×</>
-            : <span className="text-muted-foreground/60">no webhook yet</span>}
+          <span className="cursor-help font-medium text-foreground" title="arr → sb-ui: the webhooks the arr sends us. This shows the LAST one.">Inbound</span>: {c.last_seen ? <>
+            <span className={cn('cursor-help underline decoration-dotted underline-offset-2', authFail ? 'text-destructive' : 'text-success')} title={inboundResult(c.last_result).desc}>{inboundResult(c.last_result).label}</span>
+            {c.last_event && <span className="text-muted-foreground/70" title="The arr eventType it sent"> · {c.last_event}</span>}
+            <span title={new Date(c.last_seen).toLocaleString()}> · {fmtAgo(c.last_seen, now)}</span>
+            <span className="cursor-help underline decoration-dotted underline-offset-2" title={`${c.hits} webhook${c.hits === 1 ? '' : 's'} received from this arr in total`}> · {c.hits}×</span>
+          </> : <span className="text-muted-foreground/60">no webhook yet</span>}
         </p>
       </div>
       {(c.probe_url || c.remote) && (

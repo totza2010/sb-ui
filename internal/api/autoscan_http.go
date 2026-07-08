@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -152,39 +151,6 @@ func clientIP(req *http.Request) string {
 	return req.RemoteAddr
 }
 
-// autoscanSelfTest POSTs a synthetic "Test" webhook to our own endpoint over the loopback
-// and reports the round-trip — so the UI's "Test" button gives an immediate, detailed
-// answer (reachable? auth OK? what status/body?) instead of relying on the *arr's opaque
-// test. It exercises the exact token + path an *arr would use.
-func autoscanSelfTest(w http.ResponseWriter, _ *http.Request) {
-	ac := loadOptions().Autoscan
-	url := "http://127.0.0.1:" + serverPort() + "/api/autoscan/webhook/" + ac.WebhookToken
-	res := map[string]any{"url": url}
-	if ac.WebhookToken == "" {
-		res["ok"] = false
-		res["error"] = "no webhook token configured yet — save the autoscan config first"
-		writeJSON(w, http.StatusOK, res)
-		return
-	}
-	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(`{"eventType":"Test"}`))
-	req.Header.Set("Content-Type", "application/json")
-	start := time.Now()
-	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
-	res["latency_ms"] = time.Since(start).Milliseconds()
-	if err != nil {
-		res["ok"] = false
-		res["error"] = err.Error()
-		writeJSON(w, http.StatusOK, res)
-		return
-	}
-	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	res["ok"] = resp.StatusCode == http.StatusOK
-	res["status"] = resp.StatusCode
-	res["response"] = strings.TrimSpace(string(rb))
-	writeJSON(w, http.StatusOK, res)
-}
-
 func autoscanStatusHandler(w http.ResponseWriter, _ *http.Request) {
 	svc := autoscanSvc()
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -203,6 +169,25 @@ func autoscanStatusHandler(w http.ResponseWriter, _ *http.Request) {
 // refreshed connection list (the "test the connection / why did it drop" button).
 func autoscanConnCheck(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "connections": connReg().probeAll()})
+}
+
+// autoscanManualAdd registers an *arr sb-ui can't auto-discover (scaffold — see addManual).
+func autoscanManualAdd(w http.ResponseWriter, req *http.Request) {
+	var b struct {
+		Source string `json:"source"`
+		Name   string `json:"name"`
+		URL    string `json:"url"`
+		APIKey string `json:"api_key"`
+	}
+	if json.NewDecoder(req.Body).Decode(&b) != nil || strings.TrimSpace(b.URL) == "" || strings.TrimSpace(b.APIKey) == "" {
+		http.Error(w, "url and api_key are required", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(b.Name) == "" {
+		b.Name = b.Source
+	}
+	connReg().addManual(b.Source, b.Name, b.URL, b.APIKey)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func autoscanClear(w http.ResponseWriter, _ *http.Request) {
