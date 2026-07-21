@@ -878,6 +878,59 @@ export interface TdCat { category: string; bytes: number; human: string; files: 
 export interface TdStorage { remotes: { remote: string; bytes: number; human: string; files: number; categories: TdCat[] }[]; categories: TdCat[]; total_bytes: number; total_human: string; total_files: number }
 export const useTeldriveStorage = () =>
   useQuery<TdStorage>({ queryKey: ['teldrive-storage'], queryFn: () => request('/teldrive/storage'), staleTime: 60_000 })
+// ── teldrive file-integrity audit ────────────────────────────────────────────────
+// Read-only checks against the teldrive Postgres (which normally lives on the teldrive
+// host, hence a user-supplied DSN). "proven" needs no assumption about chunk size;
+// "suspect" does, and is labelled as such.
+export interface TdServer { host: string; port: number; user: string; password: string; sslmode: string }
+export interface TdAuditDB {
+  remote: string; database: string; own_server?: boolean; server?: TdServer
+  dsn?: string; max_part_bytes: number; disabled?: boolean
+}
+export interface TdAuditConfig { shared: TdServer; dbs: TdAuditDB[]; dsn?: string; max_part_bytes?: number }
+export interface TdAuditInstance { remote: string; scanned: number; max_part_bytes: number; took_ms?: number; error?: string }
+export interface TdDBInfo { ok: boolean; version?: string; files: number; uploads: number; sessions: number; schema_ok: boolean; error?: string; checked_at: string }
+export interface TdAuditFile {
+  remote: string; id: string; name: string; path: string; parent_id?: string
+  size: number; parts: number; channel_id: number; encrypted: boolean
+  min_needed: number; short_by: number; guess_need: number; updated_at: string; verdict: string
+}
+export interface TdStalled { remote: string; upload_id: string; name: string; parts: number; bytes: number; started_at: string; last_part_at: string }
+export interface TdAuditResult {
+  instances: TdAuditInstance[]; scanned: number; chunk_guess: number; active_only: boolean
+  proven: TdAuditFile[]; suspect: TdAuditFile[]; broken: TdAuditFile[]; orphans: TdAuditFile[]
+  paths_ok: boolean; stalled: TdStalled[]
+  parts_types: Record<string, number>; ran_at: string
+}
+export const useTeldriveAuditConfig = () =>
+  useQuery<TdAuditConfig>({ queryKey: ['teldrive-config'], queryFn: () => request('/teldrive/config') })
+export const useSaveTeldriveAuditConfig = () =>
+  useMutation<TdAuditConfig, Error, TdAuditConfig>({ mutationFn: (c) => request('/teldrive/config', { method: 'PUT', body: JSON.stringify(c) }) })
+export const useTeldriveDBTest = () =>
+  useMutation<TdDBInfo, Error, { remote?: string; dsn?: string; database?: string; server?: TdServer }>({
+    mutationFn: (b) => request('/teldrive/db/test', { method: 'POST', body: JSON.stringify(b) }),
+  })
+// all=1 includes soft-deleted files; by default they are skipped, since a deleted file
+// being short is not a problem anyone needs to see.
+export const useTeldriveAudit = () =>
+  useMutation<TdAuditResult, Error, { chunk: number; all?: boolean }>({
+    mutationFn: ({ chunk, all }) => request(`/teldrive/audit?chunk=${chunk}${all ? '&all=1' : ''}`),
+  })
+export interface TdAuditSnapshot {
+  result?: TdAuditResult; counts?: Record<string, number>; saved_at: string
+  auto?: boolean; watch_msg?: string; pending?: boolean; error?: string; scanning?: boolean
+}
+// The stored findings, served without scanning anything — so a page reload shows the last
+// result instead of an empty table. Polled so an automatic rescan appears on its own.
+export const useTeldriveLastAudit = () =>
+  useQuery<TdAuditSnapshot>({
+    queryKey: ['teldrive-audit-last'],
+    queryFn: () => request('/teldrive/audit/last'),
+    refetchInterval: 60_000,
+  })
+export const useTeldriveFileParts = () =>
+  useMutation<{ file_id: string; message_ids: number[] }, Error, string>({ mutationFn: (id) => request(`/teldrive/file-parts?id=${encodeURIComponent(id)}`) })
+
 export const useTeldriveSearch = (q: string) =>
   useQuery<{ results: TdResult[]; count: number; errors?: string[] }>({ queryKey: ['teldrive-search', q], queryFn: () => request(`/teldrive/search?q=${encodeURIComponent(q)}`), enabled: q.trim().length > 0 })
 

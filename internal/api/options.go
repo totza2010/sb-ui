@@ -2,7 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -72,6 +75,99 @@ type autoscanConfig struct {
 	WebhookEvents []string `json:"webhook_events"`
 }
 
+// teldriveServer is one Postgres host. Instances usually share a server and differ only
+// by database, so the shared block is filled once and each instance names its database;
+// an instance that genuinely lives elsewhere overrides the whole block.
+type teldriveServer struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	User     string `json:"user"`
+	Password string `json:"password"`
+	SSLMode  string `json:"sslmode"` // disable | prefer | require | verify-full; "" = disable
+}
+
+func (s teldriveServer) filled() bool { return strings.TrimSpace(s.Host) != "" }
+
+// dsn renders a connection string. Built through net/url rather than concatenated so a
+// password containing @ : / ? or # can't corrupt the URL — a very easy way to produce a
+// connection that silently points somewhere else.
+func (s teldriveServer) dsn(database string) string {
+	port := s.Port
+	if port == 0 {
+		port = 5432
+	}
+	ssl := strings.TrimSpace(s.SSLMode)
+	if ssl == "" {
+		ssl = "disable"
+	}
+	u := url.URL{
+		Scheme:   "postgres",
+		Host:     net.JoinHostPort(strings.TrimSpace(s.Host), strconv.Itoa(port)),
+		Path:     "/" + strings.TrimPrefix(strings.TrimSpace(database), "/"),
+		RawQuery: url.Values{"sslmode": {ssl}}.Encode(),
+	}
+	if s.User != "" {
+		u.User = url.UserPassword(s.User, s.Password)
+	}
+	return u.String()
+}
+
+// teldriveDB is one teldrive instance's database. Remote matches the name in rclone.conf
+// so findings can be attributed back to an account.
+type teldriveDB struct {
+	Remote   string `json:"remote"`
+	Database string `json:"database"`
+	// OwnServer switches this instance off the shared block onto Server below.
+	OwnServer bool           `json:"own_server"`
+	Server    teldriveServer `json:"server,omitempty"`
+	// DSN, when set, overrides everything above — an escape hatch for connection strings
+	// the structured fields can't express.
+	DSN string `json:"dsn,omitempty"`
+	// MaxPartBytes is the largest a single part can be — set it to the biggest chunk size
+	// this instance was ever configured with. It drives the audit's only assumption-free
+	// test: if size > parts * MaxPartBytes the file is short whatever the chunking was.
+	// 0 = Telegram's 2 GiB limit, which is safe but rarely sharp enough to catch anything.
+	MaxPartBytes int64 `json:"max_part_bytes"`
+	Disabled     bool  `json:"disabled"` // keep the settings but skip it when scanning
+}
+
+type teldriveConfig struct {
+	Shared teldriveServer `json:"shared"`
+	DBs    []teldriveDB   `json:"dbs"`
+	// Legacy single-instance fields, folded into DBs on load.
+	DSN          string `json:"dsn,omitempty"`
+	MaxPartBytes int64  `json:"max_part_bytes,omitempty"`
+}
+
+// teldriveDBs returns the configured instances with DSN resolved, migrating the old
+// single-DSN shape.
+func (c teldriveConfig) teldriveDBs() []teldriveDB {
+	if len(c.DBs) == 0 && strings.TrimSpace(c.DSN) != "" {
+		return []teldriveDB{{Remote: "teldrive", DSN: c.DSN, MaxPartBytes: c.MaxPartBytes}}
+	}
+	out := make([]teldriveDB, 0, len(c.DBs))
+	for _, db := range c.DBs {
+		db.DSN = c.resolveDSN(db)
+		out = append(out, db)
+	}
+	return out
+}
+
+// resolveDSN picks the explicit DSN, else this instance's own server, else the shared one.
+func (c teldriveConfig) resolveDSN(db teldriveDB) string {
+	if s := strings.TrimSpace(db.DSN); s != "" {
+		return s
+	}
+	srv := c.Shared
+	if db.OwnServer {
+		srv = db.Server
+	}
+	if !srv.filled() {
+		return ""
+	}
+	return srv.dsn(db.Database)
+}
+
 type optionsConfig struct {
 	Plex         plexConfig     `json:"plex"`
 	PathMappings []pathMapping  `json:"path_mappings"`
@@ -79,6 +175,7 @@ type optionsConfig struct {
 	Tmdb         tmdbConfig     `json:"tmdb"`
 	Qbit         qbitConn       `json:"qbit"`     // qBittorrent WebUI (used by the uploader's block module)
 	Autoscan     autoscanConfig `json:"autoscan"` // built-in autoscan service
+	Teldrive     teldriveConfig `json:"teldrive"` // teldrive Postgres (integrity audit)
 }
 
 // mapArrPath rewrites an arr path to the Plex path using the longest matching
@@ -131,6 +228,20 @@ func saveAutoscanConfig(ac autoscanConfig) autoscanConfig {
 	return optCfg.Autoscan
 }
 
+// saveTeldriveConfig patches only the Teldrive field, so saving the audit's DSN from the
+// tgDrive page can't clobber unrelated options.
+func saveTeldriveConfig(tc teldriveConfig) teldriveConfig {
+	optMu.Lock()
+	defer optMu.Unlock()
+	if !optLoaded {
+		store.ReadJSON(optionsRel, &optCfg)
+		optLoaded = true
+	}
+	optCfg.Teldrive = tc
+	store.WriteJSON(optionsRel, optCfg)
+	return optCfg.Teldrive
+}
+
 func putOptions(w http.ResponseWriter, req *http.Request) {
 	var c optionsConfig
 	if json.NewDecoder(req.Body).Decode(&c) != nil {
@@ -143,6 +254,7 @@ func putOptions(w http.ResponseWriter, req *http.Request) {
 		optLoaded = true
 	}
 	c.Autoscan = optCfg.Autoscan // autoscan is managed only via /api/autoscan/config
+	c.Teldrive = optCfg.Teldrive // teldrive audit config is managed via /api/teldrive/config
 	optCfg = c
 	store.WriteJSON(optionsRel, optCfg)
 	optMu.Unlock()
