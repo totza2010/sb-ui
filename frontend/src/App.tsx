@@ -19,12 +19,40 @@ import { TgDrive } from '@/pages/TgDrive'
 import { Settings } from '@/pages/Settings'
 import { ConnectionSetup } from '@/pages/ConnectionSetup'
 import { BackendOffline } from '@/components/BackendOffline'
-import { useSetupStatus } from '@/lib/api'
+import { useSetupStatus, useAuthStatus, setUnauthorizedHandler } from '@/lib/api'
+import { Login } from '@/pages/Login'
+import { useEffect, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
 })
+
+// AuthGate decides between the app and the login screen, and is the single place that reacts
+// to the server refusing a request. Any 401 anywhere re-asks who we are, so a session that
+// expired mid-session lands on the login form instead of a page of broken panels.
+function AuthGate({ children }: { children: ReactNode }) {
+  const qc = useQueryClient()
+  const { data: auth, isLoading, isError, refetch } = useAuthStatus()
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => qc.invalidateQueries({ queryKey: ['auth-status'] }))
+    return () => setUnauthorizedHandler(null)
+  }, [qc])
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+  // /api/auth/status needs no credentials, so failing to reach it means the backend is down,
+  // not that we are signed out.
+  if (isError) return <BackendOffline onRetry={() => refetch()} />
+  if (!auth?.authenticated) return <Login status={auth} />
+  return <>{children}</>
+}
 
 function AppInner() {
   const qc = useQueryClient()
@@ -90,7 +118,9 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <AppInner />
+        <AuthGate>
+          <AppInner />
+        </AuthGate>
       </BrowserRouter>
     </QueryClientProvider>
   )

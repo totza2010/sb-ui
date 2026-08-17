@@ -1,8 +1,8 @@
 import { NavLink } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { LayoutDashboard, Package, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container, ArrowRightLeft, Send, SlidersHorizontal, Library, Plug, Compass, ScanLine } from 'lucide-react'
+import { LayoutDashboard, Package, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container, ArrowRightLeft, Send, SlidersHorizontal, Library, Plug, Compass, ScanLine, LogOut, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/cn'
-import { useSetupStatus, useTeldriveRemotes } from '@/lib/api'
+import { useSetupStatus, useTeldriveRemotes, useAuthStatus, useLogout } from '@/lib/api'
 import { SelfUpdate } from '@/components/SelfUpdate'
 import { SystemStatus } from '@/components/SystemStatus'
 
@@ -21,6 +21,25 @@ const nav = [
   { to: '/logs',     label: 'Jobs & Logs',  icon: Activity },
   { to: '/settings', label: 'Settings',     icon: SlidersHorizontal },
 ]
+
+// SignOut ends the browser session. Hidden when the session isn't what let you in (a loopback
+// caller on the host, for instance), because there would be nothing for it to do.
+function SignOut() {
+  const qc = useQueryClient()
+  const { data: auth } = useAuthStatus()
+  const logout = useLogout()
+  if (!auth?.authenticated || (auth.trust_loopback && auth.loopback_client)) return null
+  return (
+    <button
+      onClick={() => logout.mutate(undefined, { onSuccess: () => qc.invalidateQueries() })}
+      disabled={logout.isPending}
+      className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors w-full disabled:opacity-50"
+    >
+      {logout.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <LogOut className="h-3.5 w-3.5" />}
+      Sign out
+    </button>
+  )
+}
 
 export function Sidebar() {
   const qc = useQueryClient()
@@ -95,6 +114,7 @@ export function Sidebar() {
           <PlugZap className="h-3.5 w-3.5" />
           Reconfigure connection
         </button>
+        <SignOut />
         <SelfUpdate />
       </div>
     </aside>

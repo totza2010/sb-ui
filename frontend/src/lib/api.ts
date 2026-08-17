@@ -2,11 +2,25 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 const BASE = '/api'
 
+// Every call goes through request(), which makes it the one place that can notice the session
+// has gone. Rather than each caller handling 401, it reports it once and the auth gate decides
+// what to show — a page full of individually-failed requests is not a login prompt.
+let onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(fn: (() => void) | null) { onUnauthorized = fn }
+
+export class UnauthorizedError extends Error {
+  constructor() { super('authentication required') }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...init,
   })
+  if (res.status === 401) {
+    onUnauthorized?.()
+    throw new UnauthorizedError()
+  }
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
@@ -595,6 +609,29 @@ export type SaveBody =
   | { mode: 'local' }
   | { mode: 'ssh'; host: string; port: number; user: string; auth_type: 'key'; key_path: string; passphrase?: string }
   | { mode: 'ssh'; host: string; port: number; user: string; auth_type: 'password'; password: string }
+
+// ── authentication ─────────────────────────────────────────────────────────────
+
+export interface AuthStatus {
+  password_set: boolean     // has anyone run `sb-ui --set-password`?
+  token_set: boolean        // is SB_UI_TOKEN configured for scripts?
+  authenticated: boolean    // is THIS request allowed through?
+  trust_loopback: boolean   // are on-host callers exempt?
+  loopback_client: boolean  // did this request come from the host itself?
+}
+
+// Reachable without credentials, which is the point: it is how the UI finds out whether to
+// show the app or a login form.
+export const useAuthStatus = () =>
+  useQuery<AuthStatus>({ queryKey: ['auth-status'], queryFn: () => request('/auth/status'), staleTime: 0, retry: false })
+
+export const useLogin = () =>
+  useMutation<{ ok: boolean }, Error, string>({
+    mutationFn: (password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ password }) }),
+  })
+
+export const useLogout = () =>
+  useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/auth/logout', { method: 'POST' }) })
 
 export const useSetupStatus = () =>
   useQuery<SetupStatus>({
