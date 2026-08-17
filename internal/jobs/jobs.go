@@ -65,6 +65,19 @@ func get(id string) *Job {
 	return jobs[id]
 }
 
+// Status returns a job's final/current status ("completed" | "failed" | "stopped" | …),
+// or "" if the job is unknown. Used by the uploader to tell a clean finish from an
+// interruption so it can resume the same remote.
+func Status(id string) string {
+	j := get(id)
+	if j == nil {
+		return ""
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.Status
+}
+
 // ListDicts returns all jobs (newest first) as JSON-ready maps.
 func ListDicts() []map[string]any {
 	mu.Lock()
@@ -138,6 +151,8 @@ func SetStatus(id, status string) {
 	j.mu.Unlock()
 	if terminal {
 		go persist(id) // log + history → /opt/saltbox-ui
+	} else if status == "running" {
+		go persistMeta(id) // record it now so a restart mid-run doesn't lose the job
 	}
 }
 

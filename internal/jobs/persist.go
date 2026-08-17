@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"sb-ui/internal/store"
@@ -15,24 +16,18 @@ type histEntry struct {
 	CreatedAt string `json:"created_at"`
 }
 
-func persist(id string) {
-	j := get(id)
-	if j == nil {
-		return
-	}
-	j.mu.Lock()
-	logText := strings.Join(j.lines, "\n")
-	entry := histEntry{j.ID, j.Tag, j.Action, j.Status, j.CreatedAt.UTC().Format(time.RFC3339)}
-	j.mu.Unlock()
+var idxMu sync.Mutex // serialises read-modify-write of logs/index.json
 
-	store.WriteText("logs/"+id+".log", logText)
-
+// indexPut upserts one metadata entry into the persisted index.
+func indexPut(e histEntry) {
+	idxMu.Lock()
+	defer idxMu.Unlock()
 	var idx []histEntry
 	store.ReadJSON("logs/index.json", &idx)
-	out := []histEntry{entry}
-	for _, e := range idx {
-		if e.ID != id {
-			out = append(out, e)
+	out := []histEntry{e}
+	for _, x := range idx {
+		if x.ID != e.ID {
+			out = append(out, x)
 		}
 	}
 	if len(out) > maxHistory {
@@ -41,7 +36,35 @@ func persist(id string) {
 	store.WriteJSON("logs/index.json", out)
 }
 
+func entryOf(j *Job) histEntry {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return histEntry{j.ID, j.Tag, j.Action, j.Status, j.CreatedAt.UTC().Format(time.RFC3339)}
+}
+
+// persistMeta records a job's metadata (no log) as soon as it starts running, so a restart
+// mid-run leaves it in the index — LoadHistory then marks it failed instead of losing it.
+func persistMeta(id string) {
+	if j := get(id); j != nil {
+		indexPut(entryOf(j))
+	}
+}
+
+func persist(id string) {
+	j := get(id)
+	if j == nil {
+		return
+	}
+	j.mu.Lock()
+	logText := strings.Join(j.lines, "\n")
+	j.mu.Unlock()
+	store.WriteText("logs/"+id+".log", logText)
+	indexPut(entryOf(j))
+}
+
 func removeFromIndex(rm map[string]bool) {
+	idxMu.Lock()
+	defer idxMu.Unlock()
 	var idx []histEntry
 	store.ReadJSON("logs/index.json", &idx)
 	out := make([]histEntry, 0, len(idx))
@@ -106,8 +129,12 @@ func LoadHistory() {
 		if err != nil {
 			created = time.Now()
 		}
+		status := e.Status
+		if status == "running" || status == "pending" || status == "" {
+			status = "failed" // was in flight when the process restarted — it isn't running now
+		}
 		jobs[e.ID] = &Job{
-			ID: e.ID, Tag: e.Tag, Action: e.Action, Status: e.Status,
+			ID: e.ID, Tag: e.Tag, Action: e.Action, Status: status,
 			CreatedAt: created, subs: map[chan Msg]struct{}{}, loaded: false,
 		}
 	}
