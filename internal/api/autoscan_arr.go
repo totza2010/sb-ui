@@ -47,9 +47,13 @@ func eqFold(s string, opts ...string) bool {
 // Sonarr — episode file → its folder; Rename uses renamedEpisodeFiles; else the series.
 func parseSonarr(body []byte) (arrScan, bool) {
 	var b struct {
-		EventType   string `json:"eventType"`
-		Series      struct{ Path string `json:"path"` } `json:"series"`
-		EpisodeFile struct{ RelativePath string `json:"relativePath"` } `json:"episodeFile"`
+		EventType string `json:"eventType"`
+		Series    struct {
+			Path string `json:"path"`
+		} `json:"series"`
+		EpisodeFile struct {
+			RelativePath string `json:"relativePath"`
+		} `json:"episodeFile"`
 		RenamedEpisodeFiles []struct {
 			PreviousPath string `json:"previousPath"`
 			RelativePath string `json:"relativePath"`
@@ -86,8 +90,12 @@ func parseSonarr(body []byte) (arrScan, bool) {
 func parseRadarr(body []byte) (arrScan, bool) {
 	var b struct {
 		EventType string `json:"eventType"`
-		Movie     struct{ FolderPath string `json:"folderPath"` } `json:"movie"`
-		MovieFile struct{ RelativePath string `json:"relativePath"` } `json:"movieFile"`
+		Movie     struct {
+			FolderPath string `json:"folderPath"`
+		} `json:"movie"`
+		MovieFile struct {
+			RelativePath string `json:"relativePath"`
+		} `json:"movieFile"`
 	}
 	if json.Unmarshal(body, &b) != nil || b.Movie.FolderPath == "" {
 		return arrScan{}, false
@@ -109,9 +117,13 @@ func parseRadarr(body []byte) (arrScan, bool) {
 // Lidarr — track files carry absolute paths (→ album folder); else the artist folder.
 func parseLidarr(body []byte) (arrScan, bool) {
 	var b struct {
-		EventType  string `json:"eventType"`
-		Artist     struct{ Path string `json:"path"` } `json:"artist"`
-		TrackFiles []struct{ Path string `json:"path"` } `json:"trackFiles"`
+		EventType string `json:"eventType"`
+		Artist    struct {
+			Path string `json:"path"`
+		} `json:"artist"`
+		TrackFiles []struct {
+			Path string `json:"path"`
+		} `json:"trackFiles"`
 	}
 	if json.Unmarshal(body, &b) != nil || b.Artist.Path == "" {
 		return arrScan{}, false
@@ -134,8 +146,12 @@ func parseLidarr(body []byte) (arrScan, bool) {
 func parseReadarr(body []byte) (arrScan, bool) {
 	var b struct {
 		EventType string `json:"eventType"`
-		Author    struct{ Path string `json:"path"` } `json:"author"`
-		BookFiles []struct{ Path string `json:"path"` } `json:"bookFiles"`
+		Author    struct {
+			Path string `json:"path"`
+		} `json:"author"`
+		BookFiles []struct {
+			Path string `json:"path"`
+		} `json:"bookFiles"`
 	}
 	if json.Unmarshal(body, &b) != nil || b.Author.Path == "" {
 		return arrScan{}, false

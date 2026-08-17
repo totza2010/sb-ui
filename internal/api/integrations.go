@@ -40,16 +40,16 @@ type connStatus struct {
 	Error       string     `json:"error,omitempty"`
 	LatencyMS   int64      `json:"latency_ms"`
 	Recommended bool       `json:"recommended,omitempty"`
-	Primary     bool       `json:"primary,omitempty"` // the default instance (e.g. Seerr for requests)
+	Primary     bool       `json:"primary,omitempty"`    // the default instance (e.g. Seerr for requests)
 	Stats       []connStat `json:"stats,omitempty"`      // instance totals (series/episodes/movies)
 	PathStats   []pathStat `json:"path_stats,omitempty"` // per-root-folder breakdown
 }
 
 type integrationGroup struct {
-	Key        string       `json:"key"`
-	Label      string       `json:"label"`
-	Library    string       `json:"library"` // the Go module
-	Used       bool         `json:"used"`    // already wired into sb-ui features
+	Key        string        `json:"key"`
+	Label      string        `json:"label"`
+	Library    string        `json:"library"` // the Go module
+	Used       bool          `json:"used"`    // already wired into sb-ui features
 	Configured bool          `json:"configured"`
 	Note       string        `json:"note,omitempty"`
 	Instances  []connStatus  `json:"instances"`
@@ -394,8 +394,12 @@ func integrationsStatus(w http.ResponseWriter, _ *http.Request) {
 	jobs := []func(){
 		func() { add(arrGroup("sonarr", "Sonarr", "8989", true, sonarrI)) },
 		func() { add(arrGroup("radarr", "Radarr", "7878", true, radarrI)) },
-		func() { add(arrGroup("prowlarr", "Prowlarr", "9696", false, discoverArrApps(map[string]string{"prowlarr": "9696"}))) },
-		func() { add(arrGroup("whisparr", "Whisparr", "6969", false, discoverArrApps(map[string]string{"whisparr": "6969"}))) },
+		func() {
+			add(arrGroup("prowlarr", "Prowlarr", "9696", false, discoverArrApps(map[string]string{"prowlarr": "9696"})))
+		},
+		func() {
+			add(arrGroup("whisparr", "Whisparr", "6969", false, discoverArrApps(map[string]string{"whisparr": "6969"})))
+		},
 		func() { add(plexGroup(loadOptions().Plex)) },
 	}
 	for _, j := range jobs {

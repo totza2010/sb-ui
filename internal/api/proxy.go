@@ -25,12 +25,12 @@ import (
 // list provider watches the file).
 
 const (
-	tsdBin     = "/usr/local/bin/tsdproxy"
-	tsdCfgDir  = "/etc/tsdproxy"
-	tsdCfg     = "/etc/tsdproxy/tsdproxy.yaml"
-	tsdList    = "/etc/tsdproxy/proxies.yaml"
-	tsdData    = "/var/lib/tsdproxy"
-	tsdUnit    = "/etc/systemd/system/tsdproxy.service"
+	tsdBin        = "/usr/local/bin/tsdproxy"
+	tsdCfgDir     = "/etc/tsdproxy"
+	tsdCfg        = "/etc/tsdproxy/tsdproxy.yaml"
+	tsdList       = "/etc/tsdproxy/proxies.yaml"
+	tsdData       = "/var/lib/tsdproxy"
+	tsdUnit       = "/etc/systemd/system/tsdproxy.service"
 	proxyLists    = "cache/proxy_lists.json" // sb-ui source of truth (other host services)
 	proxySelf     = "cache/proxy_self.json"  // sb-ui's own self-expose config
 	proxyDash     = "cache/proxy_dash.json"  // tsdproxy's built-in dashboard expose config
@@ -51,8 +51,8 @@ type proxyOpts struct {
 	PreventDuplicates  bool   `json:"prevent_duplicates"`   // preventDuplicates
 	MaxCertConcurrency int    `json:"max_cert_concurrency"` // maxCertConcurrency
 	// Docker provider
-	TargetHostname string `json:"target_hostname"`   // docker targetHostname
-	TryInternalNet bool   `json:"try_internal_net"`  // tryDockerInternalNetwork
+	TargetHostname string `json:"target_hostname"`  // docker targetHostname
+	TryInternalNet bool   `json:"try_internal_net"` // tryDockerInternalNetwork
 	// Health check (applied to both docker + lists providers)
 	HealthCheck    bool `json:"health_check"`    // healthCheckEnabled
 	HealthInterval int  `json:"health_interval"` // healthCheckInterval (s)
@@ -189,8 +189,8 @@ func loadManaged(path, defName string) managedProxyCfg {
 	return c
 }
 
-func loadSelfProxy() managedProxyCfg { return loadManaged(proxySelf, "sb-ui") }
-func loadDashProxy() managedProxyCfg { return loadManaged(proxyDash, "dash") }
+func loadSelfProxy() managedProxyCfg  { return loadManaged(proxySelf, "sb-ui") }
+func loadDashProxy() managedProxyCfg  { return loadManaged(proxyDash, "dash") }
 func saveSelfProxy(c managedProxyCfg) { store.WriteJSON(proxySelf, c) }
 
 // managedEntries returns the live sb-ui-managed entries (self + dashboard) that are
@@ -668,7 +668,9 @@ func proxyPutManaged(path, defName string) http.HandlerFunc {
 	}
 }
 
-func proxyGetSelf(w http.ResponseWriter, r *http.Request) { proxyGetManaged(loadSelfProxy, selfTarget)(w, r) }
+func proxyGetSelf(w http.ResponseWriter, r *http.Request) {
+	proxyGetManaged(loadSelfProxy, selfTarget)(w, r)
+}
 func proxyPutSelf(w http.ResponseWriter, r *http.Request) { proxyPutManaged(proxySelf, "sb-ui")(w, r) }
 func proxyGetDash(w http.ResponseWriter, r *http.Request) {
 	proxyGetManaged(loadDashProxy, dashTarget)(w, r)

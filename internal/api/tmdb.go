@@ -502,9 +502,9 @@ func discoverCollection(w http.ResponseWriter, req *http.Request) {
 }
 
 type tmdbSuggestion struct {
-	ID      int    `json:"id"`
-	Name    string `json:"name"`
-	Image   string `json:"image"`
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Image    string `json:"image"`
 	KnownFor string `json:"known_for,omitempty"`
 }
 
@@ -632,7 +632,7 @@ type tmdbName struct {
 }
 
 type tmdbCompanyRaw struct {
-	Name    string `json:"name"`
+	Name     string `json:"name"`
 	LogoPath string `json:"logo_path"`
 }
 
@@ -649,25 +649,25 @@ type tmdbEpisodeRaw struct {
 }
 
 type tmdbDetailRaw struct {
-	ID               int     `json:"id"`
-	Title            string  `json:"title"`
-	Name             string  `json:"name"`
-	Tagline          string  `json:"tagline"`
-	Overview         string  `json:"overview"`
-	BackdropPath     string  `json:"backdrop_path"`
-	PosterPath       string  `json:"poster_path"`
-	Status           string  `json:"status"`
-	Homepage         string  `json:"homepage"`
-	OriginalLanguage string  `json:"original_language"`
-	ReleaseDate      string  `json:"release_date"`
-	FirstAirDate     string  `json:"first_air_date"`
-	Runtime          int     `json:"runtime"`
-	EpisodeRunTime   []int   `json:"episode_run_time"`
-	VoteAverage      float64 `json:"vote_average"`
-	VoteCount        int     `json:"vote_count"`
-	Popularity       float64 `json:"popularity"`
-	NumberOfEpisodes int     `json:"number_of_episodes"`
-	Genres           []tmdbName
+	ID                  int     `json:"id"`
+	Title               string  `json:"title"`
+	Name                string  `json:"name"`
+	Tagline             string  `json:"tagline"`
+	Overview            string  `json:"overview"`
+	BackdropPath        string  `json:"backdrop_path"`
+	PosterPath          string  `json:"poster_path"`
+	Status              string  `json:"status"`
+	Homepage            string  `json:"homepage"`
+	OriginalLanguage    string  `json:"original_language"`
+	ReleaseDate         string  `json:"release_date"`
+	FirstAirDate        string  `json:"first_air_date"`
+	Runtime             int     `json:"runtime"`
+	EpisodeRunTime      []int   `json:"episode_run_time"`
+	VoteAverage         float64 `json:"vote_average"`
+	VoteCount           int     `json:"vote_count"`
+	Popularity          float64 `json:"popularity"`
+	NumberOfEpisodes    int     `json:"number_of_episodes"`
+	Genres              []tmdbName
 	ProductionCompanies []tmdbCompanyRaw `json:"production_companies"`
 	ProductionCountries []tmdbName       `json:"production_countries"`
 	SpokenLanguages     []struct {

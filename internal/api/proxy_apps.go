@@ -183,7 +183,7 @@ func appTailscalePut(w http.ResponseWriter, req *http.Request) {
 
 	key := role + "_role_docker_labels_custom"
 	custom := toStrMap(inv[key]) // preserve any non-tsdproxy custom labels
-	for k := range custom {       // drop our previous tsdproxy.* keys
+	for k := range custom {      // drop our previous tsdproxy.* keys
 		if strings.HasPrefix(k, "tsdproxy.") {
 			delete(custom, k)
 		}
