@@ -179,6 +179,7 @@ func Mount(r chi.Router) {
 	r.Get("/api/teldrive/audit/last", teldriveAuditLastHandler)
 	r.Get("/api/teldrive/file-parts", teldrivePartsHandler)
 	r.Get("/api/rclone/providers", rcloneProviders)
+	r.Get("/api/rclone/capabilities", rcloneCapabilities) // what this rclone is; ?refresh=1 re-probes
 	r.Post("/api/rclone/transfer", rcloneTransfer)
 	r.Post("/api/rclone/preview", rclonePreview) // the exact argv a transfer would run; runs nothing
 	r.Get("/api/transfers/{id}/stats", transferStatsHandler)

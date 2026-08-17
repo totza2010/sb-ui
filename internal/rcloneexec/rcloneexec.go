@@ -7,9 +7,11 @@
 // 500 G limit happened because a byte count was formatted into a flag at the call site,
 // where nothing recorded that rclone reads a bare number as KiB.
 //
-// Everything here is pure: no process is started, no state is touched, so the exact
-// command a run will execute can be asserted in a test, and previewed in the UI without
-// running anything.
+// The rendering half is pure: no process is started, no state is touched, so the exact command
+// a run will execute can be asserted in a test and previewed in the UI without running
+// anything. probe.go is the exception — asking the binary what it is requires running it — and
+// it takes the runner as an argument rather than reaching for a global, so it stays testable
+// too.
 package rcloneexec
 
 import (

@@ -133,7 +133,13 @@ func rcloneProviders(w http.ResponseWriter, _ *http.Request) {
 		globalCache = loadGlobalFlags()
 		flagsLoaded = true
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"global": globalCache, "backends": provCache})
+	// An empty catalog used to be indistinguishable from "this rclone has no flags". Say which
+	// rclone answered and what went wrong, so the UI can explain itself instead of looking broken.
+	caps := rcloneCaps()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"global": globalCache, "backends": provCache,
+		"rclone_version": caps.VersionLine, "rc": caps.RC, "problems": caps.Problems,
+	})
 }
 
 // loadGlobalFlags reads the main rclone options (transfers, fast-list, …) via the
