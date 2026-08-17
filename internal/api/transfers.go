@@ -219,6 +219,40 @@ func loadProviders() map[string][]flagInfo {
 	return out
 }
 
+// rclonePreview returns the exact command line(s) a transfer would run, without running
+// anything.
+//
+// The UI used to build this string itself, re-implementing the flag rules in TypeScript
+// alongside the Go ones. Two copies of the same rules drift, and when they do the preview
+// lies about what is going to happen — which is the worst thing a preview can do. Now the
+// process that will execute the command is also the one that describes it, so the two cannot
+// disagree. rcloneexec.Argv is pure, so this costs nothing and touches no state.
+func rclonePreview(w http.ResponseWriter, req *http.Request) {
+	var b struct {
+		Op     string         `json:"op"`
+		Items  []transferItem `json:"items"`
+		Dst    string         `json:"dst"`
+		DryRun bool           `json:"dry_run"`
+		Opts   transferOpts   `json:"opts"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&b)
+	if !transferOps[b.Op] {
+		http.Error(w, "op must be copy/move/sync", http.StatusBadRequest)
+		return
+	}
+	// A preview is for input that is still being edited, so incomplete input is not an error —
+	// it just produces nothing to show yet.
+	cmds := []string{}
+	for _, args := range rcloneexec.Argv(rcloneConfPath(), b.Op, b.Items, b.Dst, b.DryRun, b.Opts) {
+		cmds = append(cmds, strings.Join(args, " "))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"commands": cmds})
+}
+
+// transferOps is the set of operations a transfer may perform — one definition, so the
+// preview and the run can never disagree about what is allowed either.
+var transferOps = map[string]bool{"copy": true, "move": true, "sync": true}
+
 // rcloneTransfer launches a copy/move/sync of one or more items into a dest
 // folder, as a single streamed job (each item run sequentially).
 func rcloneTransfer(w http.ResponseWriter, req *http.Request) {
@@ -231,7 +265,7 @@ func rcloneTransfer(w http.ResponseWriter, req *http.Request) {
 		Queue  bool           `json:"queue"` // run via the sequential queue instead of now
 	}
 	_ = json.NewDecoder(req.Body).Decode(&b)
-	if b.Op != "copy" && b.Op != "move" && b.Op != "sync" {
+	if !transferOps[b.Op] {
 		http.Error(w, "op must be copy/move/sync", http.StatusBadRequest)
 		return
 	}

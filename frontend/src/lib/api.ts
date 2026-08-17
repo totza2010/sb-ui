@@ -998,6 +998,17 @@ export const useRcloneProviders = () =>
     staleTime: 60 * 60_000,
   })
 
+// The command preview comes from the server that will run it, so the two cannot disagree.
+// The UI used to render this string itself from a TypeScript copy of the flag rules; when the
+// copies drifted, the preview described a command that was never going to run.
+export const useRclonePreview = (body: { op: string; items: TransferItem[]; dst: string; dry_run?: boolean; opts?: TransferOpts } | null) =>
+  useQuery<{ commands: string[] }>({
+    queryKey: ['rclone-preview', body],
+    queryFn: () => request('/rclone/preview', { method: 'POST', body: JSON.stringify(body) }),
+    enabled: !!body && body.items.length > 0 && !!body.dst,
+    staleTime: 60_000, // the same input always renders the same command
+  })
+
 export const useRcloneTransfer = () =>
   useMutation<{ job_id: string }, Error, { op: 'copy' | 'move' | 'sync'; items: TransferItem[]; dst: string; dry_run?: boolean; opts?: TransferOpts; queue?: boolean }>({
     mutationFn: (b) => request('/rclone/transfer', { method: 'POST', body: JSON.stringify(b) }),

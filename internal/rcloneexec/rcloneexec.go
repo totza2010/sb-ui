@@ -195,6 +195,12 @@ func Flags(op string, o Opts, dryRun bool) []string {
 // remotes) cannot share a command, so they come back as separate argvs to run in sequence.
 // Group order follows the order the items were given.
 func Argv(conf, op string, items []Item, dst string, dryRun bool, o Opts) [][]string {
+	// No destination means there is no transfer to describe. Without this the renderer happily
+	// produced `rclone copy /src ""` — the run path rejects that earlier, but a preview built
+	// from half-typed input would show a command nobody should be looking at.
+	if strings.TrimSpace(dst) == "" || len(items) == 0 {
+		return nil
+	}
 	flags := Flags(op, o, dryRun)
 
 	order := []string{}

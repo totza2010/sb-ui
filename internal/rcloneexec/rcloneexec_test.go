@@ -112,9 +112,25 @@ func TestArgvAlwaysRequestsJSONStats(t *testing.T) {
 	}
 }
 
-func TestArgvNoItemsNoCommands(t *testing.T) {
-	if got := Argv("/c.conf", "copy", nil, "rem:", false, Opts{}); len(got) != 0 {
-		t.Errorf("no items should produce no commands, got %d", len(got))
+// Half-typed input must render nothing rather than a command with a hole in it. The live
+// preview asks for one of these on every edit, and `rclone copy /src ""` is not something a
+// user should ever be shown.
+func TestArgvNeedsBothEndsToRenderAnything(t *testing.T) {
+	items := []Item{{Path: "/srv/data/one"}}
+	cases := []struct {
+		what  string
+		items []Item
+		dst   string
+	}{
+		{"no items", nil, "rem:"},
+		{"no destination", items, ""},
+		{"blank destination", items, "   "},
+		{"neither", nil, ""},
+	}
+	for _, c := range cases {
+		if got := Argv("/c.conf", "copy", c.items, c.dst, false, Opts{}); len(got) != 0 {
+			t.Errorf("%s should produce no commands, got %v", c.what, got)
+		}
 	}
 }
 

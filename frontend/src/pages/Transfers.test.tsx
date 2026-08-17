@@ -172,3 +172,35 @@ describe('TransfersPanel actions', () => {
     release!()
   })
 })
+
+// The command preview must come from the server that will run it. The UI used to render this
+// string from a TypeScript copy of the flag rules, so the two could drift and the preview
+// would describe a command that was never going to run.
+describe('command preview', () => {
+  it('shows what the server says it will run, not something the UI built', async () => {
+    let asked: Record<string, unknown> | undefined
+    server.use(
+      http.post('/api/rclone/preview', async ({ request }) => {
+        asked = (await request.json()) as Record<string, unknown>
+        return HttpResponse.json({ commands: ['rclone --config /etc/r.conf move /srv/data rem:Media --filter + /one'] })
+      }),
+      ...baseHandlers(),
+    )
+    renderWithProviders(<TransfersPanel onJobStart={() => {}} />)
+
+    // Open the editor for the saved task, which fills in a source and destination.
+    await userEvent.click(await screen.findByTitle('Edit Nightly media'))
+
+    // The exact string the server returned is what appears — the UI does not compose it.
+    expect(await screen.findByText(/rclone --config \/etc\/r\.conf move \/srv\/data rem:Media/)).toBeInTheDocument()
+    // ...and it asked using the form's current values.
+    expect(asked).toMatchObject({ op: 'move', dst: 'rem:Media' })
+  })
+
+  it('says what is missing instead of previewing an incomplete command', async () => {
+    server.use(...baseHandlers({ tasks: [] }))
+    renderWithProviders(<TransfersPanel onJobStart={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /New transfer/ }))
+    expect(await screen.findByText(/Pick a source and a destination/i)).toBeInTheDocument()
+  })
+})

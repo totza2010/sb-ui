@@ -3,7 +3,7 @@
  * watch them. Browsing remotes lives on the Files page (rclone group).
  */
 import { useEffect, useMemo, useState, type ComponentProps, type ReactNode, type MouseEvent as ReactMouseEvent } from 'react'
-import { useRcloneTransfer, useJobs, useRcloneRemotes, useTransferStats, useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRunTask, useQueueTask, useToggleTask, useStopTransfer, useQueue, useQueueAction, useTransferTelemetry, useDeleteTelemetry, usePurgeTelemetry, useDeleteJob, useClearJobs, type TransferOpts, type TransferTask, type TelSample } from '@/lib/api'
+import { useRcloneTransfer, useJobs, useRcloneRemotes, useTransferStats, useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRunTask, useQueueTask, useToggleTask, useStopTransfer, useQueue, useQueueAction, useRclonePreview, useTransferTelemetry, useDeleteTelemetry, usePurgeTelemetry, useDeleteJob, useClearJobs, type TransferOpts, type TransferTask, type TelSample } from '@/lib/api'
 import { TransferOptions } from '@/components/TransferOptions'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
@@ -40,27 +40,16 @@ function DryRunBadge({ on }: { on?: boolean }) {
 const TRANSFER_OPS = new Set(['copy', 'move', 'sync'])
 const statusVariant = { completed: 'success', running: 'default', failed: 'destructive', pending: 'secondary', stopped: 'secondary' } as const
 
-// Mirror the server's flag building so the dialog can preview the rclone command.
-function buildFlags(op: string, o: TransferOpts, dryRun: boolean): string[] {
-  const f: string[] = []
-  if (dryRun) f.push('--dry-run')
-  if (o.transfers) f.push('--transfers', String(o.transfers))
-  if (o.checkers) f.push('--checkers', String(o.checkers))
-  if (o.tpslimit) f.push('--tpslimit', String(o.tpslimit))
-  if (o.retries) f.push('--retries', String(o.retries))
-  if (o.bwlimit) f.push('--bwlimit', o.bwlimit)
-  if (o.ignore_existing) f.push('--ignore-existing')
-  if (o.update) f.push('--update')
-  if (o.create_empty_src_dirs) f.push('--create-empty-src-dirs')
-  if (o.no_traverse) f.push('--no-traverse')
-  if (o.one_file_system) f.push('--one-file-system')
-  if (o.fast_list) f.push('--fast-list')
-  if (o.compare) f.push(`--${o.compare}`)
-  if (op === 'sync' && o.sync_delete) f.push(`--delete-${o.sync_delete}`)
-  for (const p of o.include ?? []) if (p.trim()) f.push('--include', p.trim())
-  for (const p of o.exclude ?? []) if (p.trim()) f.push('--exclude', p.trim())
-  for (const e of o.extra ?? []) if (e.flag) { f.push(e.flag); if (e.value) f.push(e.value) }
-  return f
+// Typing in the options changes the preview request on every keystroke, so settle first: one
+// request per edit instead of one per character. Debounces the serialised body, because the
+// object itself is rebuilt each render and would restart the timer forever.
+function useDebounced<T>(value: T, ms = 300): T {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return v
 }
 
 // Transfers — the page. The job manager on the left, the shared Activity list pinned on
@@ -201,7 +190,9 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
     else createTask.mutate(body, { onSuccess: done })
   }
 
-  const cmdPreview = `rclone ${op} <source> ${dst || '<dest>'} --stats 1s ${buildFlags(op, opts, dryRun).join(' ')}`.replace(/\s+/g, ' ').trim()
+  // The server renders the command it would run; the UI only displays it.
+  const previewKey = useDebounced(JSON.stringify({ op, items, dst, dry_run: dryRun, opts }))
+  const preview = useRclonePreview(dlg ? JSON.parse(previewKey) : null)
 
   return (
     <div className="space-y-4">
@@ -429,7 +420,15 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
             </div>
 
             {/* Command preview */}
-            <div className="rounded-md bg-[#0d1117] text-[#c9d1d9] p-2 text-[11px] font-mono break-all">{cmdPreview}</div>
+            <div className="rounded-md bg-[#0d1117] text-[#c9d1d9] p-2 text-[11px] font-mono break-all">
+              {items.length === 0 || !dst
+                ? <span className="text-[#8b949e]">Pick a source and a destination to see the command.</span>
+                : preview.isPending
+                  ? <span className="text-[#8b949e]">Asking the server…</span>
+                  : preview.data?.commands?.length
+                    ? preview.data.commands.map((c, i) => <div key={i} className={i ? 'mt-1.5' : ''}>{c}</div>)
+                    : <span className="text-[#8b949e]">No command for this selection.</span>}
+            </div>
 
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
               <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />

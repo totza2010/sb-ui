@@ -180,6 +180,7 @@ func Mount(r chi.Router) {
 	r.Get("/api/teldrive/file-parts", teldrivePartsHandler)
 	r.Get("/api/rclone/providers", rcloneProviders)
 	r.Post("/api/rclone/transfer", rcloneTransfer)
+	r.Post("/api/rclone/preview", rclonePreview) // the exact argv a transfer would run; runs nothing
 	r.Get("/api/transfers/{id}/stats", transferStatsHandler)
 	r.Get("/api/transfers/{id}/telemetry", transferTelemetry)
 	r.Delete("/api/transfers/{id}/telemetry", deleteTelemetry)
