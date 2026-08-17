@@ -62,9 +62,14 @@ func listTasks(w http.ResponseWriter, _ *http.Request) {
 	cp := append([]Task(nil), tasks...)
 	taskMu.Unlock()
 	out := make([]taskResp, 0, len(cp))
+	live := make(map[string]bool, len(cp))
 	for _, t := range cp {
 		out = append(out, taskResp{Task: t, NextRun: taskNextRun(t.ID, t.Schedule, t.Disabled)})
+		live[nrKey(t.ID, t.Schedule)] = true
 	}
+	// Entries for edited or deleted schedules are dead once nothing refers to them; drop
+	// them here so the cache tracks the current task set instead of growing forever.
+	pruneNextRunCache(live)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -77,9 +82,9 @@ func toggleTask(w http.ResponseWriter, req *http.Request) {
 		if tasks[i].ID == id {
 			tasks[i].Disabled = !tasks[i].Disabled
 			saveTasks()
-			nrMu.Lock()
-			delete(nextRunCache, id)
-			nrMu.Unlock()
+			// No cache work needed: a disabled task reports no next run at all, and the entry
+			// is keyed by the schedule, so re-enabling either reuses a still-valid time or
+			// recomputes because it has passed.
 			writeJSON(w, http.StatusOK, tasks[i])
 			return
 		}
@@ -396,24 +401,46 @@ var (
 	nextRunCache = map[string]time.Time{}
 )
 
+// nrKey identifies a cached next-run by the task AND the schedule it was computed from.
+//
+// Keying on the id alone meant an edited schedule kept reporting the next run of the OLD
+// one: the entry is only recomputed once its time has passed, so changing 20:15 to 20:21
+// left the future 20:15 in place and the UI showed it until that moment arrived. Invalidating
+// on update was the alternative, but only the enable/disable toggle ever remembered to —
+// putting the schedule in the key means nobody has to.
+func nrKey(id, cron string) string { return id + "\x00" + cron }
+
 func taskNextRun(id, cron string, disabled bool) string {
 	if cron == "" || disabled {
 		return ""
 	}
 	now := time.Now()
+	key := nrKey(id, cron)
 	nrMu.Lock()
-	nr := nextRunCache[id]
+	nr := nextRunCache[key]
 	nrMu.Unlock()
 	if nr.IsZero() || !nr.After(now) {
+		// Walks forward a minute at a time for up to a year, which is why the result is cached.
 		nr = computeNextRun(cron, now)
 		nrMu.Lock()
-		nextRunCache[id] = nr
+		nextRunCache[key] = nr
 		nrMu.Unlock()
 	}
 	if nr.IsZero() {
 		return ""
 	}
 	return nr.UTC().Format(time.RFC3339)
+}
+
+// pruneNextRunCache keeps only the entries still referred to by a live task+schedule.
+func pruneNextRunCache(keep map[string]bool) {
+	nrMu.Lock()
+	defer nrMu.Unlock()
+	for k := range nextRunCache {
+		if !keep[k] {
+			delete(nextRunCache, k)
+		}
+	}
 }
 
 func computeNextRun(cron string, from time.Time) time.Time {
