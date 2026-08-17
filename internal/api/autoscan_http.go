@@ -237,11 +237,22 @@ func autoscanGetConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func autoscanPutConfig(w http.ResponseWriter, req *http.Request) {
-	var ac autoscanConfig
-	if json.NewDecoder(req.Body).Decode(&ac) != nil {
+	body, err := readBody(req)
+	if err != nil {
 		http.Error(w, "bad config", http.StatusBadRequest)
 		return
 	}
+	// Patch the stored config rather than replacing it, so a field the form doesn't send keeps
+	// its value. This handler is where the webhook token "went missing" once and had to be
+	// regenerated below — the same silent zeroing that later turned a dry-run task into a real
+	// transfer, in a different handler.
+	ac, perr := patchOnto(loadOptions().Autoscan, body)
+	if perr != nil {
+		http.Error(w, "bad config", http.StatusBadRequest)
+		return
+	}
+	// An invariant, not a rescue: arr instances post to a URL containing this token, so it must
+	// never be empty — including when a request explicitly clears it.
 	if ac.WebhookToken == "" {
 		ac.WebhookToken = randToken()
 	}

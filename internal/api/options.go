@@ -250,8 +250,8 @@ func saveTeldriveConfig(tc teldriveConfig) teldriveConfig {
 }
 
 func putOptions(w http.ResponseWriter, req *http.Request) {
-	var c optionsConfig
-	if json.NewDecoder(req.Body).Decode(&c) != nil {
+	body, err := readBody(req)
+	if err != nil {
 		http.Error(w, "bad config", http.StatusBadRequest)
 		return
 	}
@@ -260,8 +260,21 @@ func putOptions(w http.ResponseWriter, req *http.Request) {
 		store.ReadJSON(optionsRel, &optCfg)
 		optLoaded = true
 	}
-	c.Autoscan = optCfg.Autoscan // autoscan is managed only via /api/autoscan/config
-	c.Teldrive = optCfg.Teldrive // teldrive audit config is managed via /api/teldrive/config
+	// Patch the stored config: a field the request doesn't mention keeps its value. Replacing
+	// wholesale meant any field the form forgot was reset to zero, and the two lines below used
+	// to be four — fields that had already been lost that way and were rescued individually.
+	c, perr := patchOnto(optCfg, body)
+	if perr != nil {
+		optMu.Unlock()
+		http.Error(w, "bad config", http.StatusBadRequest)
+		return
+	}
+	// These two are a different rule, not a patch workaround: this endpoint has no authority
+	// over them, whatever the request says. GET /options returns them, so the UI holds a copy
+	// and echoes it back on save; without this, a stale copy would overwrite whatever the
+	// owning endpoint has since stored.
+	c.Autoscan = optCfg.Autoscan // owned by /api/autoscan/config
+	c.Teldrive = optCfg.Teldrive // owned by /api/teldrive/config
 	optCfg = c
 	store.WriteJSON(optionsRel, optCfg)
 	optMu.Unlock()

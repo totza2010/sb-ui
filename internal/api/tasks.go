@@ -136,15 +136,16 @@ func validTask(t Task) bool {
 // request mentions it at all, rather than merged field by field — a half-sent options object
 // should not silently inherit the other half of the old one.
 func applyTaskPatch(stored Task, body []byte) (Task, bool) {
-	var sent map[string]json.RawMessage
-	if json.Unmarshal(body, &sent) != nil {
+	sent := sentKeys(body)
+	if sent == nil {
 		return stored, false
 	}
-	t := stored
-	if _, ok := sent["opts"]; ok {
-		t.Opts = transferOpts{}
+	base := stored
+	if sent["opts"] {
+		base.Opts = transferOpts{}
 	}
-	if json.Unmarshal(body, &t) != nil {
+	t, err := patchOnto(base, body)
+	if err != nil {
 		return stored, false
 	}
 	t.ID, t.CreatedAt = stored.ID, stored.CreatedAt
