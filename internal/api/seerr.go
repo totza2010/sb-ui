@@ -297,36 +297,36 @@ type seerrVideo struct {
 
 // seerrDetailResp is the unified, Overseerr-style detail payload.
 type seerrDetailResp struct {
-	MediaType   string        `json:"media_type"`
-	TmdbID      int           `json:"tmdb_id"`
-	ImdbID      string        `json:"imdb_id,omitempty"`
-	Title       string        `json:"title"`
-	Tagline     string        `json:"tagline"`
-	Year        string        `json:"year"`
-	Overview    string        `json:"overview"`
-	Backdrop    string        `json:"backdrop"`
-	Poster      string        `json:"poster"`
-	Genres      []string      `json:"genres"`
-	Vote        float64       `json:"vote"`
-	VoteCount   int           `json:"vote_count"`
-	Popularity  int           `json:"popularity"`
-	Status      int           `json:"status"`      // mediaInfo: 0/1 requestable · 2/3 requested · 4/5 available
-	StatusText  string        `json:"status_text"` // production status
-	ReleaseDate string        `json:"release_date"`
-	Language    string        `json:"language"`  // original language code
-	Languages   string        `json:"languages"` // spoken languages
-	Country     string        `json:"country"`
-	Rating      string         `json:"rating,omitempty"`   // certification (e.g. TV-MA, [FR] 16)
-	Homepage    string         `json:"homepage,omitempty"` // official site
-	Runtime     int            `json:"runtime,omitempty"`
-	Seasons     int            `json:"seasons,omitempty"`
-	Episodes    int            `json:"episodes,omitempty"`
-	Trailer     string         `json:"trailer,omitempty"`
-	Videos      []seerrVideo   `json:"videos,omitempty"` // trailers/teasers/featurettes
-	Creators    []string       `json:"creators,omitempty"`
-	Studios     []seerrCompany `json:"studios,omitempty"`
-	Networks    []seerrCompany `json:"networks,omitempty"`
-	Tags        []string       `json:"tags,omitempty"`
+	MediaType     string         `json:"media_type"`
+	TmdbID        int            `json:"tmdb_id"`
+	ImdbID        string         `json:"imdb_id,omitempty"`
+	Title         string         `json:"title"`
+	Tagline       string         `json:"tagline"`
+	Year          string         `json:"year"`
+	Overview      string         `json:"overview"`
+	Backdrop      string         `json:"backdrop"`
+	Poster        string         `json:"poster"`
+	Genres        []string       `json:"genres"`
+	Vote          float64        `json:"vote"`
+	VoteCount     int            `json:"vote_count"`
+	Popularity    int            `json:"popularity"`
+	Status        int            `json:"status"`      // mediaInfo: 0/1 requestable · 2/3 requested · 4/5 available
+	StatusText    string         `json:"status_text"` // production status
+	ReleaseDate   string         `json:"release_date"`
+	Language      string         `json:"language"`  // original language code
+	Languages     string         `json:"languages"` // spoken languages
+	Country       string         `json:"country"`
+	Rating        string         `json:"rating,omitempty"`   // certification (e.g. TV-MA, [FR] 16)
+	Homepage      string         `json:"homepage,omitempty"` // official site
+	Runtime       int            `json:"runtime,omitempty"`
+	Seasons       int            `json:"seasons,omitempty"`
+	Episodes      int            `json:"episodes,omitempty"`
+	Trailer       string         `json:"trailer,omitempty"`
+	Videos        []seerrVideo   `json:"videos,omitempty"` // trailers/teasers/featurettes
+	Creators      []string       `json:"creators,omitempty"`
+	Studios       []seerrCompany `json:"studios,omitempty"`
+	Networks      []seerrCompany `json:"networks,omitempty"`
+	Tags          []string       `json:"tags,omitempty"`
 	NextEpisode   *seerrEpisode  `json:"next_episode,omitempty"`
 	LastEpisode   *seerrEpisode  `json:"last_episode,omitempty"`
 	SeasonList    []seerrSeason  `json:"season_list,omitempty"`
