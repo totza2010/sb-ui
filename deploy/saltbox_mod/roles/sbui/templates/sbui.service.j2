@@ -17,8 +17,17 @@ Group={{ user.name }}
 Type=simple
 WorkingDirectory={{ sbui_data_path }}/
 # Run on the host in local mode (sb-ui talks to the local Docker/ansible).
+#
+# Bound on every interface because Traefik reaches us from inside Docker, at the bridge
+# gateway (see sbui.yml) — loopback-only would be unreachable. That used to mean the port was
+# an unauthenticated way around Authelia; it no longer is, because the API itself now requires
+# a session or a token. To also take the port off the LAN, set SB_UI_ADDR to the bridge
+# address (e.g. 172.19.0.1:{{ sbui_role_web_port }}) — note that on-host callers then need the
+# token too, since 127.0.0.1 would no longer be bound.
 Environment=SB_UI_ADDR=:{{ sbui_role_web_port }}
 Environment=SALTBOX_CONFIGURED=true
+# Holds SB_UI_TOKEN, generated once by the role. Optional (-) so the service still starts if
+# it is absent; the browser password lives in the app's own state, not here.
 EnvironmentFile=-{{ sbui_data_path }}/.env
 ExecStart={{ sbui_binary_path }}
 Restart=on-failure

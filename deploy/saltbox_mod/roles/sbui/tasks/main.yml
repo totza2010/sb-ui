@@ -30,6 +30,39 @@
     mode: "0644"
     force: true
 
+# The API denies /api and /ws without a session or a token, so scripts and the CLI need a
+# token to work with. It is generated once and then left alone: regenerating it on every
+# `sb install sbui` would silently break whatever was already using it.
+- name: "Look for an existing API token"
+  ansible.builtin.slurp:
+    src: "{{ sbui_data_path }}/.env"
+  register: sbui_env_file
+  failed_when: false
+  changed_when: false
+
+- name: "Note whether a token is already configured"
+  ansible.builtin.set_fact:
+    sbui_token_present: "{{ 'SB_UI_TOKEN=' in (sbui_env_file.content | default('') | b64decode) }}"
+
+- name: "Generate the API token (first install only)"
+  ansible.builtin.lineinfile:
+    path: "{{ sbui_data_path }}/.env"
+    regexp: "^SB_UI_TOKEN="
+    line: "SB_UI_TOKEN={{ lookup('password', '/dev/null length=48 chars=ascii_letters,digits') }}"
+    create: true
+    owner: "{{ user.name }}"
+    group: "{{ user.name }}"
+    mode: "0600"
+  when: not sbui_token_present
+
+- name: "Show where the API token lives"
+  ansible.builtin.debug:
+    msg:
+      - "API token: {{ sbui_data_path }}/.env  (SB_UI_TOKEN — for scripts and the CLI)"
+      - "Browser sign-in needs a password, which is set on this host and never over the API:"
+      - "  {{ sbui_binary_path }} --set-password"
+  when: not sbui_token_present
+
 - name: "Get {{ sbui_channel }} sb-ui release metadata"
   ansible.builtin.include_tasks: "{{ resources_tasks_path }}/git/github_api_request.yml"
   vars:
