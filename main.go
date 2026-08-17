@@ -37,6 +37,14 @@ func main() {
 	cfg := config.Load()
 	config.Set(cfg)
 	executor.Set(executor.Make(cfg))
+
+	// Password management runs as a one-off command, on the host, over a terminal — never
+	// through the web API, so a caller who is already inside cannot lock the owner out.
+	if len(os.Args) > 1 && (os.Args[1] == "--set-password" || os.Args[1] == "--new-token") {
+		runAuthCommand(os.Args[1])
+		return
+	}
+
 	if cfg.IsRemote() {
 		log.Printf("sb-ui → ssh %s@%s:%d", cfg.User, cfg.Host, cfg.Port)
 	} else {
@@ -53,6 +61,12 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	// Authentication guards /api and /ws. It sits above the routes rather than inside Mount so
+	// there is exactly one place that decides who gets in, and no route can be added later
+	// that quietly sits outside it. The SPA itself stays reachable so the login page can load.
+	api.SetTrustLoopback(os.Getenv(api.TrustLoopbackEnv) != "false")
+	r.Use(api.RequireAuth)
+
 	// API + WS routes
 	api.Mount(r)
 
@@ -65,12 +79,13 @@ func main() {
 
 	addr := os.Getenv("SB_UI_ADDR")
 	if addr == "" {
-		// Loopback by default — the API is unauthenticated, so it must not be
-		// exposed on all interfaces unless explicitly requested via SB_UI_ADDR.
-		// The saltbox_mod service sets SB_UI_ADDR=:9180 (fixed port, behind Authelia).
+		// Loopback by default; the deployed unit sets SB_UI_ADDR=:9180 to be reachable
+		// through Traefik. Exposing the port is no longer the only thing standing between a
+		// stranger and the API — RequireAuth above denies /api and /ws without a session or
+		// token — but loopback remains the right default for a local run.
 		addr = api.DefaultAddr
 	}
-	api.SetListenAddr(addr) // so the UI can show the real webhook port
+	api.SetListenAddr(addr)    // so the UI can show the real webhook port
 	go api.EnsureRoleCurrent() // keep our saltbox_mod role in step with this binary
 	log.Printf("sb-ui %s listening on %s", buildinfo.Version, addr)
 	log.Fatal(http.ListenAndServe(addr, r))

@@ -20,6 +20,13 @@ import (
 func Mount(r chi.Router) {
 	r.Get("/api/health", health)
 
+	// Authentication. These are reachable without credentials (see authExempt) — logging in
+	// cannot require being logged in.
+	r.Get("/api/auth/status", authStatus)
+	r.Post("/api/auth/login", authLogin)
+	r.Post("/api/auth/logout", authLogout)
+	r.Post("/api/auth/rotate", authRotate) // sign every session out
+
 	// Setup wizard / connection
 	r.Get("/api/setup/status", setupStatus)
 	r.Post("/api/setup/test", setupTest)

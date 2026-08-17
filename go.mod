@@ -18,6 +18,7 @@ require (
 	github.com/pkg/sftp v1.13.10
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	golang.org/x/crypto v0.53.0
+	golang.org/x/term v0.44.0
 )
 
 require (
