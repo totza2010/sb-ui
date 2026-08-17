@@ -16,6 +16,7 @@ import (
 
 	"sb-ui/internal/executor"
 	"sb-ui/internal/jobs"
+	"sb-ui/internal/rcloneexec"
 	"sb-ui/internal/store"
 )
 
@@ -94,121 +95,16 @@ func rcloneMkdir(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-type transferItem struct {
-	Path  string `json:"path"`   // remote:path or /local/path
-	IsDir bool   `json:"is_dir"` // dirs get their name appended to dest (rclone merges contents otherwise)
-}
+// The transfer request model and the argv/flag rendering live in internal/rcloneexec, the
+// only place allowed to build an rclone command line. These aliases keep the api-local
+// names (and their JSON shapes, which persisted tasks depend on) pointing at it.
+type transferItem = rcloneexec.Item
+type transferOpts = rcloneexec.Opts
+type extraFlag = rcloneexec.ExtraFlag
 
-// transferOpts mirrors the common rclone transfer flags (whitelisted — we never
-// pass raw flag strings, to avoid argument injection).
-type transferOpts struct {
-	Transfers          int         `json:"transfers"`
-	Checkers           int         `json:"checkers"`
-	Bwlimit            string      `json:"bwlimit"`
-	Tpslimit           int         `json:"tpslimit"`
-	Retries            int         `json:"retries"`
-	IgnoreExisting     bool        `json:"ignore_existing"`
-	Update             bool        `json:"update"`
-	CreateEmptySrcDirs bool        `json:"create_empty_src_dirs"`
-	NoTraverse         bool        `json:"no_traverse"`
-	OneFileSystem      bool        `json:"one_file_system"`
-	FastList           bool        `json:"fast_list"`
-	Compare            string      `json:"compare"`     // "" | checksum | size-only | ignore-size
-	SyncDelete         string      `json:"sync_delete"` // during | after | before (sync only)
-	Include            []string    `json:"include"`
-	Exclude            []string    `json:"exclude"`
-	Extra              []extraFlag `json:"extra"` // free-form rclone flags (from the flag browser)
-}
-
-type extraFlag struct {
-	Flag  string `json:"flag"`
-	Value string `json:"value"`
-}
-
-var (
-	bwlimitRE = regexp.MustCompile(`^[0-9.]+[bBkKmMgGtTi]*(:[0-9.]+[bBkKmMgGtTi]*)?$`)
-	flagRE    = regexp.MustCompile(`^--[a-z0-9][a-z0-9-]*$`)
-)
-
-// transferFlags turns whitelisted opts into rclone argv.
+// transferFlags renders whitelisted opts as rclone argv.
 func transferFlags(op string, o transferOpts, dryRun bool) []string {
-	var f []string
-	add := func(name, val string) { f = append(f, name, val) }
-	if dryRun {
-		f = append(f, "--dry-run")
-	}
-	if o.Transfers > 0 && o.Transfers <= 64 {
-		add("--transfers", strconv.Itoa(o.Transfers))
-	}
-	if o.Checkers > 0 && o.Checkers <= 64 {
-		add("--checkers", strconv.Itoa(o.Checkers))
-	}
-	if o.Tpslimit > 0 && o.Tpslimit <= 1000 {
-		add("--tpslimit", strconv.Itoa(o.Tpslimit))
-	}
-	if o.Retries > 0 && o.Retries <= 100 {
-		add("--retries", strconv.Itoa(o.Retries))
-	}
-	if o.Bwlimit != "" && bwlimitRE.MatchString(o.Bwlimit) {
-		add("--bwlimit", o.Bwlimit)
-	}
-	if o.IgnoreExisting {
-		f = append(f, "--ignore-existing")
-	}
-	if o.Update {
-		f = append(f, "--update")
-	}
-	if o.CreateEmptySrcDirs {
-		f = append(f, "--create-empty-src-dirs")
-	}
-	if o.NoTraverse {
-		f = append(f, "--no-traverse")
-	}
-	if o.OneFileSystem {
-		f = append(f, "--one-file-system")
-	}
-	if o.FastList {
-		f = append(f, "--fast-list")
-	}
-	switch o.Compare {
-	case "checksum":
-		f = append(f, "--checksum")
-	case "size-only":
-		f = append(f, "--size-only")
-	case "ignore-size":
-		f = append(f, "--ignore-size")
-	}
-	if op == "sync" {
-		switch o.SyncDelete {
-		case "after":
-			f = append(f, "--delete-after")
-		case "before":
-			f = append(f, "--delete-before")
-		case "during":
-			f = append(f, "--delete-during")
-		}
-	}
-	for _, p := range o.Include {
-		if p = strings.TrimSpace(p); p != "" && !strings.ContainsAny(p, "\n\r") {
-			add("--include", p)
-		}
-	}
-	for _, p := range o.Exclude {
-		if p = strings.TrimSpace(p); p != "" && !strings.ContainsAny(p, "\n\r") {
-			add("--exclude", p)
-		}
-	}
-	for _, e := range o.Extra {
-		if !flagRE.MatchString(e.Flag) || strings.ContainsAny(e.Value, "\n\r") {
-			continue
-		}
-		if e.Value == "" {
-			f = append(f, e.Flag)
-		} else {
-			add(e.Flag, e.Value)
-		}
-	}
-	return f
+	return rcloneexec.Flags(op, o, dryRun)
 }
 
 // ── rclone flag catalog (per-backend options, e.g. teldrive-specific) ─────────
@@ -384,28 +280,12 @@ func stopTransfer(w http.ResponseWriter, req *http.Request) {
 
 // runTransfer executes a transfer (one job, items sequentially), streaming output
 // into the job log and live stats. Shared by immediate runs, tasks, and the queue.
-// rclone exit codes that are not failures for us. rclone documents 8 as "transfer
-// exceeded — limit set by --max-transfer reached" and 9 as "operation successful, but no
-// files transferred". The uploader deliberately sets --max-transfer to each remote's
-// remaining daily cap, so 8 is its normal stop condition.
 const (
-	rcExitMaxTransfer = 8
-	rcExitNoTransfer  = 9
+	rcExitMaxTransfer = rcloneexec.ExitMaxTransfer
+	rcExitNoTransfer  = rcloneexec.ExitNoTransfer
 )
 
-// classifyExit maps an rclone exit code to what it means for the job: whether it failed,
-// and whether it stopped because --max-transfer (the daily cap) was reached. Pure, so the
-// rule is testable without running rclone.
-func classifyExit(code int) (failed, capped bool) {
-	switch code {
-	case 0, rcExitNoTransfer:
-		return false, false
-	case rcExitMaxTransfer:
-		return false, true
-	default:
-		return true, false
-	}
-}
+func classifyExit(code int) (failed, capped bool) { return rcloneexec.ClassifyExit(code) }
 
 func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dryRun bool, opts transferOpts) {
 	jobs.SetStatus(jobID, "running")
@@ -422,36 +302,13 @@ func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dry
 		delete(cancelFns, jobID)
 		cancelMu.Unlock()
 	}()
-	conf := rcloneConfPath()
-	flags := transferFlags(op, opts, dryRun)
-	base := []string{"--use-json-log", "--stats", "1s", "--stats-file-name-length", "0", "-v"}
-
-	// Group selected items by their parent, then run ONE rclone command per group
-	// with --filter rules (like RcloneBrowser): rclone transfers the group in
-	// parallel and preserves each item's name under the destination. Different
-	// parents/remotes become separate sequential commands.
-	order := []string{}
-	groups := map[string][]string{}
-	for _, it := range items {
-		p := endpointParent(it.Path)
-		if _, ok := groups[p]; !ok {
-			order = append(order, p)
-		}
-		groups[p] = append(groups[p], endpointBase(it.Path))
-	}
-
+	// One argv per group of same-parent items; rcloneexec owns how they are built, so the
+	// command that runs here is the same one a preview would show.
 	failed := false
-	for _, parent := range order {
+	for _, args := range rcloneexec.Argv(rcloneConfPath(), op, items, dst, dryRun, opts) {
 		if ctx.Err() != nil {
 			break
 		}
-		args := []string{"rclone", "--config", conf, op, parent, dst}
-		args = append(args, base...)
-		args = append(args, flags...)
-		for _, n := range groups[parent] {
-			args = append(args, "--filter", "+ /"+n, "--filter", "+ /"+n+"/**")
-		}
-		args = append(args, "--filter", "- *")
 		jobs.PushLog(jobID, "$ "+strings.Join(args, " "))
 		code, err := streamTransfer(ctx, jobID, args)
 		if err != nil {
@@ -743,27 +600,8 @@ func streamTransfer(ctx context.Context, jobID string, args []string) (int, erro
 	return s.Exit(), nil
 }
 
-// endpointParent returns the parent dir of a "remote:path" or "/local/path".
-func endpointParent(p string) string {
-	if i := strings.Index(p, ":"); i > 0 && !strings.HasPrefix(p, "/") {
-		base, rest := p[:i+1], p[i+1:]
-		if j := strings.LastIndex(rest, "/"); j >= 0 {
-			return base + rest[:j]
-		}
-		return base
-	}
-	if j := strings.LastIndex(p, "/"); j > 0 {
-		return p[:j]
-	}
-	return "/"
-}
-
-func endpointBase(p string) string {
-	if i := strings.Index(p, ":"); i > 0 && !strings.HasPrefix(p, "/") {
-		return path.Base(p[i+1:])
-	}
-	return path.Base(p)
-}
+func endpointParent(p string) string { return rcloneexec.Parent(p) }
+func endpointBase(p string) string   { return rcloneexec.Base(p) }
 
 func summarize(items []transferItem) string {
 	if len(items) == 1 {
