@@ -250,13 +250,24 @@ func rcloneTransfer(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"job_id": id})
 		return
 	}
-	j := jobs.Create(transferLabel(b.Op, b.Items, b.Dst), b.Op)
+	j := jobs.Create(transferLabel(b.Op, b.Items, b.Dst, b.DryRun), b.Op)
 	go runTransfer(j.ID, "", b.Op, b.Items, b.Dst, b.DryRun, b.Opts)
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
 }
 
-func transferLabel(op string, items []transferItem, dst string) string {
-	return op + ": " + summarize(items) + " → " + dst
+// transferLabel names a job for the Activity list and the persisted history.
+//
+// A dry run says so in the name. Without it a preview and a real transfer were labelled
+// identically, so a scheduled run that had quietly lost its dry-run flag looked exactly like
+// the harmless one from the day before — the only way to tell them apart was to open the log
+// and look for --dry-run. It cuts both ways: a real move must be recognisable as one at a
+// glance, in history, forever.
+func transferLabel(op string, items []transferItem, dst string, dryRun bool) string {
+	label := op + ": " + summarize(items) + " → " + dst
+	if dryRun {
+		return "DRY-RUN " + label
+	}
+	return label
 }
 
 // cancel registry: lets the Stop endpoint kill a running transfer.

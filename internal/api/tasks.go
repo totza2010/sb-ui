@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -97,19 +98,60 @@ func taskFromBody(req *http.Request) (Task, bool) {
 	if json.NewDecoder(req.Body).Decode(&t) != nil {
 		return t, false
 	}
+	return t, validTask(t)
+}
+
+// validTask checks a task is runnable, whether it was just created or just edited.
+func validTask(t Task) bool {
 	if t.Op != "copy" && t.Op != "move" && t.Op != "sync" {
-		return t, false
+		return false
 	}
 	if len(t.Items) == 0 || !validEndpoint(t.Dst) {
-		return t, false
+		return false
 	}
 	for _, it := range t.Items {
 		if !validEndpoint(it.Path) {
-			return t, false
+			return false
 		}
 	}
 	if t.Schedule != "" && !validCron(t.Schedule) {
-		return t, false
+		return false
+	}
+	return true
+}
+
+// applyTaskPatch decodes an edit onto the STORED task, so a field the request doesn't
+// mention keeps the value it already had.
+//
+// Editing used to decode into an empty Task and replace the stored one wholesale, which made
+// the browser's in-memory form the system of record: any field the client failed to send was
+// silently reset to its zero value. That is not hypothetical — it turned a dry-run task into
+// a real one when a hot reload reset the form's dry_run to false, and the next scheduled run
+// copied files for real. Other fields had already been lost the same way and were rescued
+// one at a time (the options handler still hand-copies Autoscan and Teldrive back, and the
+// autoscan handler regenerates a webhook token that "went missing"). Patching instead of
+// replacing removes the whole class rather than the next symptom.
+//
+// ID and CreatedAt are never taken from the request. `opts` is replaced as a unit when the
+// request mentions it at all, rather than merged field by field — a half-sent options object
+// should not silently inherit the other half of the old one.
+func applyTaskPatch(stored Task, body []byte) (Task, bool) {
+	var sent map[string]json.RawMessage
+	if json.Unmarshal(body, &sent) != nil {
+		return stored, false
+	}
+	t := stored
+	if _, ok := sent["opts"]; ok {
+		t.Opts = transferOpts{}
+	}
+	if json.Unmarshal(body, &t) != nil {
+		return stored, false
+	}
+	t.ID, t.CreatedAt = stored.ID, stored.CreatedAt
+	if !validTask(t) {
+		// Hand back the untouched record, never the half-applied one: a caller that only
+		// looked at the value would otherwise be holding a task with the bad edit in it.
+		return stored, false
 	}
 	return t, true
 }
@@ -124,7 +166,7 @@ func createTask(w http.ResponseWriter, req *http.Request) {
 	t.ID = uuid.NewString()
 	t.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	if strings.TrimSpace(t.Name) == "" {
-		t.Name = transferLabel(t.Op, t.Items, t.Dst)
+		t.Name = transferLabel(t.Op, t.Items, t.Dst, false) // the flag can change; the stored name must not
 	}
 	taskMu.Lock()
 	tasks = append(tasks, t)
@@ -135,8 +177,8 @@ func createTask(w http.ResponseWriter, req *http.Request) {
 
 func updateTask(w http.ResponseWriter, req *http.Request) {
 	id := chi.URLParam(req, "id")
-	t, ok := taskFromBody(req)
-	if !ok {
+	body, err := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+	if err != nil {
 		http.Error(w, "Invalid task", http.StatusBadRequest)
 		return
 	}
@@ -145,10 +187,14 @@ func updateTask(w http.ResponseWriter, req *http.Request) {
 	defer taskMu.Unlock()
 	for i := range tasks {
 		if tasks[i].ID == id {
-			t.ID = id
-			t.CreatedAt = tasks[i].CreatedAt
+			// Patch the stored task rather than replacing it: an omitted field keeps its value.
+			t, ok := applyTaskPatch(tasks[i], body)
+			if !ok {
+				http.Error(w, "Invalid task", http.StatusBadRequest)
+				return
+			}
 			if strings.TrimSpace(t.Name) == "" {
-				t.Name = transferLabel(t.Op, t.Items, t.Dst)
+				t.Name = transferLabel(t.Op, t.Items, t.Dst, false) // the flag can change; the stored name must not
 			}
 			tasks[i] = t
 			saveTasks()
@@ -207,7 +253,7 @@ func runTaskNow(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
-	j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst), t.Op)
+	j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst, t.DryRun), t.Op)
 	go runTransfer(j.ID, t.ID, t.Op, t.Items, t.Dst, t.DryRun, t.Opts)
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": j.ID})
 }
@@ -279,7 +325,7 @@ func startQueueWorker() {
 // it when the queue is running and idle.
 func enqueueTask(t Task) string {
 	startQueueWorker()
-	j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst), t.Op)
+	j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst, t.DryRun), t.Op)
 	qMu.Lock()
 	queueList = append(queueList, queueItem{JobID: j.ID, Label: j.Tag, task: t})
 	qMu.Unlock()
@@ -382,7 +428,7 @@ func startScheduler() {
 				taskMu.Unlock()
 				for _, t := range due {
 					if t.RunMode == "now" {
-						j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst), t.Op)
+						j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst, t.DryRun), t.Op)
 						go runTransfer(j.ID, t.ID, t.Op, t.Items, t.Dst, t.DryRun, t.Opts)
 					} else {
 						enqueueTask(t)

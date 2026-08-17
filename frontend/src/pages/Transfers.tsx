@@ -2,7 +2,7 @@
  * Transfers — pure transfer management: launch rclone copy/move/sync jobs and
  * watch them. Browsing remotes lives on the Files page (rclone group).
  */
-import { useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode, type MouseEvent as ReactMouseEvent } from 'react'
 import { useRcloneTransfer, useJobs, useRcloneRemotes, useTransferStats, useTasks, useCreateTask, useUpdateTask, useDeleteTask, useRunTask, useQueueTask, useToggleTask, useStopTransfer, useQueue, useQueueAction, useTransferTelemetry, useDeleteTelemetry, usePurgeTelemetry, useDeleteJob, useClearJobs, type TransferOpts, type TransferTask, type TelSample } from '@/lib/api'
 import { TransferOptions } from '@/components/TransferOptions'
 import { useQueryClient } from '@tanstack/react-query'
@@ -14,7 +14,28 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { LogStream } from '@/components/LogStream'
 import { PathPicker, type PickItem } from '@/components/PathPicker'
 import { cn } from '@/lib/cn'
-import { ArrowRightLeft, Rocket, FolderInput, FilePlus2, X, ChevronDown, ChevronRight, Plus, Save, Clock, Play, ListPlus, Pencil, Trash2, Square, Pause, ArrowUp, ArrowDown, Zap } from 'lucide-react'
+import { ArrowRightLeft, Rocket, FolderInput, FilePlus2, X, ChevronDown, ChevronRight, Plus, Save, Clock, Play, ListPlus, Pencil, Trash2, Square, Pause, ArrowUp, ArrowDown, Zap, Loader2 } from 'lucide-react'
+
+// ActionButton — a button that shows it was pressed: while its action is in flight it
+// disables itself and swaps its icon for a spinner. Every action on this page goes through
+// it, because "press it and nothing changes" was the complaint — most of these buttons
+// previously had no pending state at all, so a click looked like a no-op until the work
+// finished and the next poll happened to bring the result in.
+function ActionButton({ busy, icon, children, disabled, ...rest }: { busy?: boolean; icon: ReactNode } & ComponentProps<typeof Button>) {
+  return (
+    <Button {...rest} disabled={disabled || busy} aria-busy={busy || undefined}>
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : icon}{children}
+    </Button>
+  )
+}
+
+// DryRunBadge — a task that only previews must say so wherever it is listed. Without it a
+// preview and a real transfer looked identical, and a task whose dry-run flag had been lost
+// was indistinguishable from the harmless one it used to be.
+function DryRunBadge({ on }: { on?: boolean }) {
+  if (!on) return null
+  return <Badge variant="secondary" className="text-[9px] border-warning/60 text-warning">DRY RUN</Badge>
+}
 
 const TRANSFER_OPS = new Set(['copy', 'move', 'sync'])
 const statusVariant = { completed: 'success', running: 'default', failed: 'destructive', pending: 'secondary', stopped: 'secondary' } as const
@@ -101,11 +122,40 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
   const toggleTask = useToggleTask()
   const invalidateTasks = () => qc.invalidateQueries({ queryKey: ['tasks'] })
 
+  // The server creates the job before it answers, so the id we get back already exists —
+  // refetch immediately instead of waiting out useJobs' 3 s poll. Without this the button
+  // did its work and the screen showed nothing for up to three seconds, and autoOpenId
+  // pointed at a job that wasn't in the list yet, so nothing expanded either.
+  const showJob = (id: string) => {
+    setAutoOpenId(id)
+    qc.invalidateQueries({ queryKey: ['jobs'] })
+  }
+
+  // Which specific row+action is in flight. A mutation's own isPending is shared by every
+  // row that uses it, so keying off that would spin all the Run buttons at once.
+  const [busy, setBusy] = useState<string | null>(null)
+  const isBusy = (key: string) => busy === key
+  // Marks this row busy and returns the mutate options that clear it again. Spread it into
+  // the call so the mutation still infers its own success type:
+  //   runTask.mutate(id, { ...acting(key), onSuccess: (d) => showJob(d.job_id) })
+  const acting = (key: string) => {
+    setBusy(key)
+    return { onSettled: () => setBusy(null) }
+  }
+
   // Queue manager
   const { data: queue } = useQueue()
   const queueAction = useQueueAction()
   const invalidateQueue = () => qc.invalidateQueries({ queryKey: ['queue'] })
-  const doQueue = (path: string) => queueAction.mutate(path, { onSuccess: invalidateQueue })
+  // Queue actions reorder or drop jobs, so the jobs list is stale too, not just the queue.
+  const [queueBusy, setQueueBusy] = useState<string | null>(null)
+  const doQueue = (path: string) => {
+    setQueueBusy(path)
+    queueAction.mutate(path, {
+      onSettled: () => setQueueBusy(null),
+      onSuccess: () => { invalidateQueue(); qc.invalidateQueries({ queryKey: ['jobs'] }) },
+    })
+  }
 
   // Available rclone flags: global + the backend(s) of the remotes in this transfer.
   const { data: conf } = useRcloneRemotes()
@@ -128,14 +178,24 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
     setName(t.name); setSchedule(t.schedule ?? ''); setRunMode(t.run_mode === 'now' ? 'now' : 'queue'); setEditingId(t.id)
     setShowSettings(false); setDlg(true)
   }
+  // Start and Queue share one mutation, so remember which button was pressed — otherwise
+  // both would show a spinner for whichever one ran.
+  const [transferMode, setTransferMode] = useState<'start' | 'queue' | null>(null)
   function start() {
-    transfer.mutate({ op, items, dst, dry_run: dryRun, opts }, { onSuccess: (d) => { setDlg(false); setAutoOpenId(d.job_id) } })
+    setTransferMode('start')
+    transfer.mutate({ op, items, dst, dry_run: dryRun, opts },
+      { onSettled: () => setTransferMode(null), onSuccess: (d) => { setDlg(false); showJob(d.job_id) } })
   }
   function queueNow() {
-    transfer.mutate({ op, items, dst, dry_run: dryRun, opts, queue: true }, { onSuccess: (d) => { setDlg(false); setAutoOpenId(d.job_id) } })
+    setTransferMode('queue')
+    transfer.mutate({ op, items, dst, dry_run: dryRun, opts, queue: true },
+      { onSettled: () => setTransferMode(null), onSuccess: (d) => { setDlg(false); showJob(d.job_id) } })
   }
   function saveTask() {
-    const body = { name: name || undefined, op, items, dst, dry_run: dryRun, opts, schedule: schedule || undefined, run_mode: schedule ? runMode : undefined } as Parameters<typeof createTask.mutate>[0]
+    // Send every field explicitly, including the empty ones. The server patches the stored
+    // task, so an omitted field means "leave it alone" — clearing a schedule has to be said
+    // out loud as "" rather than by leaving it out.
+    const body = { name, op, items, dst, dry_run: dryRun, opts, schedule, run_mode: schedule ? runMode : '' } as Parameters<typeof createTask.mutate>[0]
     const done = () => { setDlg(false); invalidateTasks() }
     if (editingId) updateTask.mutate({ id: editingId, ...body }, { onSuccess: done })
     else createTask.mutate(body, { onSuccess: done })
@@ -165,6 +225,7 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
                   <div className="flex items-center gap-2">
                     <span className={cn('text-sm font-medium truncate', t.disabled ? 'text-muted-foreground line-through' : 'text-foreground')}>{t.name}</span>
                     <Badge variant="secondary" className="text-[9px] capitalize">{t.op}</Badge>
+                    <DryRunBadge on={t.dry_run} />
                     {t.schedule && <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><Clock className="h-3 w-3" />{t.schedule}</span>}
                     {t.disabled && <Badge variant="secondary" className="text-[9px]">paused</Badge>}
                   </div>
@@ -174,15 +235,25 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
                   </p>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => runTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><Play className="h-3.5 w-3.5" />Run</Button>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => queueTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><ListPlus className="h-3.5 w-3.5" />Queue</Button>
+                  <ActionButton size="sm" variant="outline" className="gap-1.5" busy={isBusy(`run:${t.id}`)} icon={<Play className="h-3.5 w-3.5" />}
+                    onClick={() => runTask.mutate(t.id, { ...acting(`run:${t.id}`), onSuccess: (d) => showJob(d.job_id) })}>
+                    {isBusy(`run:${t.id}`) ? 'Starting…' : 'Run'}
+                  </ActionButton>
+                  <ActionButton size="sm" variant="outline" className="gap-1.5" busy={isBusy(`queue:${t.id}`)} icon={<ListPlus className="h-3.5 w-3.5" />}
+                    onClick={() => queueTask.mutate(t.id, { ...acting(`queue:${t.id}`), onSuccess: (d) => showJob(d.job_id) })}>
+                    {isBusy(`queue:${t.id}`) ? 'Queuing…' : 'Queue'}
+                  </ActionButton>
                   {t.schedule && (
-                    <Button size="icon" variant="ghost" className="h-8 w-8" title={t.disabled ? 'Resume schedule' : 'Pause schedule'} onClick={() => toggleTask.mutate(t.id, { onSuccess: invalidateTasks })}>
-                      {t.disabled ? <Play className="h-3.5 w-3.5 text-success" /> : <Pause className="h-3.5 w-3.5 text-warning" />}
-                    </Button>
+                    <ActionButton size="icon" variant="ghost" className="h-8 w-8" busy={isBusy(`toggle:${t.id}`)}
+                      title={t.disabled ? 'Resume schedule' : 'Pause schedule'}
+                      icon={t.disabled ? <Play className="h-3.5 w-3.5 text-success" /> : <Pause className="h-3.5 w-3.5 text-warning" />}
+                      onClick={() => toggleTask.mutate(t.id, { ...acting(`toggle:${t.id}`), onSuccess: invalidateTasks })} />
                   )}
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(t)}><Pencil className="h-3.5 w-3.5" /></Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => deleteTask.mutate(t.id, { onSuccess: invalidateTasks })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
+                  <Button size="icon" variant="ghost" className="h-8 w-8" title={`Edit ${t.name}`} onClick={() => openEdit(t)}><Pencil className="h-3.5 w-3.5" /></Button>
+                  <ActionButton size="icon" variant="ghost" className="h-8 w-8" busy={isBusy(`del:${t.id}`)}
+                    title={`Delete ${t.name}`}
+                    icon={<Trash2 className="h-3.5 w-3.5 text-destructive" />}
+                    onClick={() => deleteTask.mutate(t.id, { ...acting(`del:${t.id}`), onSuccess: invalidateTasks })} />
                 </div>
               </div>
             ))}
@@ -207,6 +278,7 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
                   <div className="flex items-center gap-2">
                     <span className={cn('text-sm font-medium truncate', t.disabled ? 'text-muted-foreground line-through' : 'text-foreground')}>{t.name}</span>
                     <code className="text-[10px] text-muted-foreground">{t.schedule}</code>
+                    <DryRunBadge on={t.dry_run} />
                     <Badge variant={t.disabled ? 'secondary' : 'success'} className="text-[9px]">{t.disabled ? 'paused' : 'active'}</Badge>
                   </div>
                   <p className="text-[11px] text-muted-foreground">
@@ -214,10 +286,15 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
                   </p>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => runTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><Play className="h-3.5 w-3.5" />Run now</Button>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => toggleTask.mutate(t.id, { onSuccess: invalidateTasks })}>
-                    {t.disabled ? <><Play className="h-3.5 w-3.5" />Resume</> : <><Pause className="h-3.5 w-3.5" />Pause</>}
-                  </Button>
+                  <ActionButton size="sm" variant="outline" className="gap-1.5" busy={isBusy(`run:${t.id}`)} icon={<Play className="h-3.5 w-3.5" />}
+                    onClick={() => runTask.mutate(t.id, { ...acting(`run:${t.id}`), onSuccess: (d) => showJob(d.job_id) })}>
+                    {isBusy(`run:${t.id}`) ? 'Starting…' : 'Run now'}
+                  </ActionButton>
+                  <ActionButton size="sm" variant="outline" className="gap-1.5" busy={isBusy(`toggle:${t.id}`)}
+                    icon={t.disabled ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
+                    onClick={() => toggleTask.mutate(t.id, { ...acting(`toggle:${t.id}`), onSuccess: invalidateTasks })}>
+                    {t.disabled ? 'Resume' : 'Pause'}
+                  </ActionButton>
                 </div>
               </div>
             ))}
@@ -233,9 +310,10 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
             <span className="text-[11px] text-muted-foreground">{queue.items.length} queued</span>
             <div className="ml-auto flex gap-1">
               {queue.running
-                ? <Button size="sm" variant="outline" className="gap-1.5" onClick={() => doQueue('/stop')}><Pause className="h-3.5 w-3.5" />Pause</Button>
-                : <Button size="sm" variant="outline" className="gap-1.5" onClick={() => doQueue('/start')}><Play className="h-3.5 w-3.5" />Start</Button>}
-              <Button size="sm" variant="ghost" className="gap-1.5 text-destructive" onClick={() => doQueue('/purge')} disabled={queue.items.length === 0}><Trash2 className="h-3.5 w-3.5" />Purge</Button>
+                ? <ActionButton size="sm" variant="outline" className="gap-1.5" busy={queueBusy === '/stop'} icon={<Pause className="h-3.5 w-3.5" />} onClick={() => doQueue('/stop')}>Pause</ActionButton>
+                : <ActionButton size="sm" variant="outline" className="gap-1.5" busy={queueBusy === '/start'} icon={<Play className="h-3.5 w-3.5" />} onClick={() => doQueue('/start')}>Start</ActionButton>}
+              <ActionButton size="sm" variant="ghost" className="gap-1.5 text-destructive" busy={queueBusy === '/purge'} icon={<Trash2 className="h-3.5 w-3.5" />}
+                onClick={() => doQueue('/purge')} disabled={queue.items.length === 0}>Purge</ActionButton>
             </div>
           </div>
           <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
@@ -255,9 +333,12 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
                 <span className="font-mono text-xs text-foreground truncate flex-1 min-w-0">{it.label}</span>
                 <Badge variant="secondary" className="text-[9px]">queued</Badge>
                 <div className="flex items-center gap-0.5 shrink-0">
-                  <Button size="icon" variant="ghost" className="h-7 w-7" disabled={i === 0} onClick={() => doQueue(`/${it.job_id}/up`)}><ArrowUp className="h-3.5 w-3.5" /></Button>
-                  <Button size="icon" variant="ghost" className="h-7 w-7" disabled={i === queue.items.length - 1} onClick={() => doQueue(`/${it.job_id}/down`)}><ArrowDown className="h-3.5 w-3.5" /></Button>
-                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => doQueue(`/${it.job_id}/remove`)}><X className="h-3.5 w-3.5 text-destructive" /></Button>
+                  <ActionButton size="icon" variant="ghost" className="h-7 w-7" busy={queueBusy === `/${it.job_id}/up`} icon={<ArrowUp className="h-3.5 w-3.5" />}
+                    disabled={i === 0} onClick={() => doQueue(`/${it.job_id}/up`)} />
+                  <ActionButton size="icon" variant="ghost" className="h-7 w-7" busy={queueBusy === `/${it.job_id}/down`} icon={<ArrowDown className="h-3.5 w-3.5" />}
+                    disabled={i === queue.items.length - 1} onClick={() => doQueue(`/${it.job_id}/down`)} />
+                  <ActionButton size="icon" variant="ghost" className="h-7 w-7" busy={queueBusy === `/${it.job_id}/remove`} icon={<X className="h-3.5 w-3.5 text-destructive" />}
+                    onClick={() => doQueue(`/${it.job_id}/remove`)} />
                 </div>
               </div>
             ))}
@@ -356,17 +437,23 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
             </label>
             <div className="flex flex-wrap justify-end gap-2">
               <Button size="sm" variant="outline" onClick={() => setDlg(false)}>Cancel</Button>
-              <Button size="sm" variant="outline" className="gap-1.5" onClick={saveTask} disabled={items.length === 0 || !dst || createTask.isPending || updateTask.isPending}>
-                <Save className="h-3.5 w-3.5" />{editingId ? 'Update task' : 'Save task'}
-              </Button>
+              <ActionButton size="sm" variant="outline" className="gap-1.5" onClick={saveTask}
+                busy={createTask.isPending || updateTask.isPending} icon={<Save className="h-3.5 w-3.5" />}
+                disabled={items.length === 0 || !dst}>
+                {editingId ? 'Update task' : 'Save task'}
+              </ActionButton>
               {!editingId && (
-                <Button size="sm" variant="outline" className="gap-1.5" onClick={queueNow} disabled={transfer.isPending || items.length === 0 || !dst}>
-                  <ListPlus className="h-3.5 w-3.5" />Queue
-                </Button>
+                <ActionButton size="sm" variant="outline" className="gap-1.5" onClick={queueNow}
+                  busy={transfer.isPending && transferMode === 'queue'} icon={<ListPlus className="h-3.5 w-3.5" />}
+                  disabled={transfer.isPending || items.length === 0 || !dst}>
+                  {transfer.isPending && transferMode === 'queue' ? 'Queuing…' : 'Queue'}
+                </ActionButton>
               )}
-              <Button size="sm" className="gap-1.5" onClick={start} disabled={transfer.isPending || items.length === 0 || !dst}>
-                <Rocket className="h-3.5 w-3.5" />Start
-              </Button>
+              <ActionButton size="sm" className="gap-1.5" onClick={start}
+                busy={transfer.isPending && transferMode === 'start'} icon={<Rocket className="h-3.5 w-3.5" />}
+                disabled={transfer.isPending || items.length === 0 || !dst}>
+                {transfer.isPending && transferMode === 'start' ? 'Starting…' : 'Start'}
+              </ActionButton>
             </div>
           </div>
         </DialogContent>
@@ -456,20 +543,25 @@ function ActivityRow({ job, autoOpen }: { job: { id: string; tag: string; status
         {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
         <span className="font-mono text-xs text-foreground truncate flex-1 min-w-0">{job.tag}</span>
         {active && (
-          <span role="button" tabIndex={0}
-            onClick={(e) => { e.stopPropagation(); stop.mutate(job.id) }}
-            className="flex items-center gap-1 text-[11px] text-destructive hover:underline shrink-0">
-            <Square className="h-3 w-3" />Stop
+          <span role="button" tabIndex={0} aria-busy={stop.isPending || undefined}
+            onClick={(e) => {
+              e.stopPropagation()
+              // Refresh the list once it's stopped, so the status changes without waiting
+              // for the next poll.
+              stop.mutate(job.id, { onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }) })
+            }}
+            className={cn('flex items-center gap-1 text-[11px] shrink-0', stop.isPending ? 'text-muted-foreground' : 'text-destructive hover:underline')}>
+            {stop.isPending ? <><Loader2 className="h-3 w-3 animate-spin" />Stopping…</> : <><Square className="h-3 w-3" />Stop</>}
           </span>
         )}
         {worst && <span title={worst === 'bad' ? 'Issues — see Analysis' : 'Warnings — see Analysis'} className={cn('h-2 w-2 rounded-full shrink-0', worst === 'bad' ? 'bg-destructive' : 'bg-amber-500')} />}
         <Badge variant={statusVariant[job.status]}>{job.status}</Badge>
         <span className="text-[11px] text-muted-foreground shrink-0 w-32 text-right">{new Date(job.created_at).toLocaleString()}</span>
         {!active && (
-          <span role="button" tabIndex={0} title="Delete from history"
+          <span role="button" tabIndex={0} title="Delete from history" aria-busy={delJob.isPending || undefined}
             onClick={(e) => { e.stopPropagation(); delJob.mutate(job.id, { onSuccess: () => { qc.invalidateQueries({ queryKey: ['jobs'] }); qc.invalidateQueries({ queryKey: ['telemetry', job.id] }) } }) }}
             className="text-muted-foreground hover:text-destructive shrink-0">
-            <Trash2 className="h-3.5 w-3.5" />
+            {delJob.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
           </span>
         )}
       </button>
