@@ -9,7 +9,9 @@ import { useNavigate } from 'react-router-dom'
 import { useTeldriveRemotes, useTeldriveSearch, useTeldriveStorage } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Search, FolderOpen, Send, Loader2 } from 'lucide-react'
+import { Search, FolderOpen, Send, Loader2, ShieldAlert } from 'lucide-react'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { TgDriveAudit } from './TgDriveAudit'
 
 export function TgDrive() {
   const { data: rd } = useTeldriveRemotes()
@@ -40,7 +42,13 @@ export function TgDrive() {
           No teldrive remotes configured. Add a <span className="font-mono">type = teldrive</span> remote to rclone to use this page.
         </div>
       ) : (
-        <>
+        <Tabs defaultValue="search" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="search" className="gap-1.5"><Search className="h-3.5 w-3.5" />Search</TabsTrigger>
+            <TabsTrigger value="audit" className="gap-1.5"><ShieldAlert className="h-3.5 w-3.5" />Integrity audit</TabsTrigger>
+          </TabsList>
+          <TabsContent value="audit"><TgDriveAudit /></TabsContent>
+          <TabsContent value="search" className="space-y-4">
           <form onSubmit={(e) => { e.preventDefault(); setQ(input.trim()) }} className="flex gap-2">
             <div className="relative flex-1">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -111,7 +119,8 @@ export function TgDrive() {
               ))}
             </div>
           )}
-        </>
+          </TabsContent>
+        </Tabs>
       )}
     </div>
   )
