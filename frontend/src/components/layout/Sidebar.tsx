@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { LayoutDashboard, Package, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container, CloudUpload, Send, SlidersHorizontal, Library, Plug, Compass, ScanLine } from 'lucide-react'
+import { LayoutDashboard, Package, Wand2, Activity, PlugZap, ListTree, DatabaseBackup, FolderTree, Container, ArrowRightLeft, Send, SlidersHorizontal, Library, Plug, Compass, ScanLine } from 'lucide-react'
 import { cn } from '@/lib/cn'
 import { useSetupStatus, useTeldriveRemotes } from '@/lib/api'
 import { SelfUpdate } from '@/components/SelfUpdate'
@@ -16,7 +16,7 @@ const nav = [
   { to: '/library',    label: 'Library',      icon: Library },
   { to: '/discover',   label: 'Discover',     icon: Compass },
   { to: '/integrations', label: 'Integrations', icon: Plug },
-  { to: '/uploader',   label: 'Uploads',      icon: CloudUpload },
+  { to: '/transfers',  label: 'Transfers',    icon: ArrowRightLeft },
   { to: '/autoscan',   label: 'Autoscan',     icon: ScanLine },
   { to: '/logs',     label: 'Jobs & Logs',  icon: Activity },
   { to: '/settings', label: 'Settings',     icon: SlidersHorizontal },

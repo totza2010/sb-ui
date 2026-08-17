@@ -42,8 +42,38 @@ function buildFlags(op: string, o: TransferOpts, dryRun: boolean): string[] {
   return f
 }
 
-// TransfersPanel — the manual/queued/scheduled rclone job manager. Rendered as the
-// "Transfers" tab of the central Uploader hub (see pages/Uploader.tsx).
+// Transfers — the page. The job manager on the left, the shared Activity list pinned on
+// the right, so a launched job is visible without leaving the controls.
+//
+// This used to be a tab inside an "Uploads" hub that also held the auto-upload rotation.
+// The rotation was lifted out to be rebuilt on a proper core (see wip/uploader-overhaul),
+// and transfers are the foundation everything else is built on, so they get their own page.
+export function Transfers() {
+  // A newly launched job auto-expands in the Activity list.
+  const [autoOpenId, setAutoOpenId] = useState<string | null>(null)
+  return (
+    <div className="mx-auto max-w-[100rem] space-y-5 p-6">
+      <div className="flex items-start gap-3">
+        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+          <ArrowRightLeft className="h-5 w-5" />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Transfers</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">Launch, queue and schedule rclone copy, move and sync jobs, and watch them run.</p>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-5 xl:flex-row xl:items-start">
+        <div className="min-w-0 flex-1"><TransfersPanel onJobStart={setAutoOpenId} /></div>
+        <aside className="w-full shrink-0 xl:sticky xl:top-6 xl:max-h-[calc(100vh-3rem)] xl:w-[34rem] xl:overflow-y-auto 2xl:w-[42rem]">
+          <TransfersActivity autoOpenId={autoOpenId} />
+        </aside>
+      </div>
+    </div>
+  )
+}
+
+// TransfersPanel — the manual/queued/scheduled rclone job manager.
 export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => void }) {
   const transfer = useRcloneTransfer()
   const [dlg, setDlg] = useState(false)

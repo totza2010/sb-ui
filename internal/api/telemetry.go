@@ -313,49 +313,10 @@ func calibratedSpeed(remote string) int64 {
 	return medianI64(sp)
 }
 
-func uploaderCalibration(w http.ResponseWriter, _ *http.Request) {
-	upMu.Lock()
-	ensureUploader()
-	cfg := ucfg
-	upMu.Unlock()
-	out := []map[string]any{}
-	seen := map[string]bool{}
-	add := func(remote string) {
-		if remote == "" || seen[remote] {
-			return
-		}
-		seen[remote] = true
-		p, ok := loadProfile(remote)
-		if !ok {
-			return
-		}
-		var sp []int64
-		throttled := 0
-		for _, r := range p.Runs {
-			if r.AvgSpeed > 0 {
-				sp = append(sp, r.AvgSpeed)
-			}
-			if r.Throttled {
-				throttled++
-			}
-		}
-		out = append(out, map[string]any{
-			"remote": remote, "runs": len(p.Runs),
-			"avg_speed": humanBytes(medianI64(sp)), "avg_speed_bytes": medianI64(sp),
-			"throttle_rate": float64(throttled) / float64(len(p.Runs)),
-		})
-	}
-	for _, r := range cfg.Remotes {
-		if r.TaskID != "" {
-			if t, ok := findTask(r.TaskID); ok {
-				add(remoteOfDst(t.Dst))
-			}
-		} else {
-			add(r.Name)
-		}
-	}
-	writeJSON(w, http.StatusOK, out)
-}
+// uploaderCalibration lived here: it reported each rotation remote's measured speed, so it
+// depended on the uploader's config for the remote list. It was removed with the rotation and
+// will come back with the rebuilt version, reading the remote list from the new core.
+// The per-remote telemetry profiles it summarised are untouched (see loadProfile).
 
 // removeTelemetry deletes one job's telemetry files + in-RAM record.
 func removeTelemetry(id string) {
@@ -572,7 +533,7 @@ func analyzeTelemetry(t *telemetry) []telFinding {
 		out = append(out, telFinding{Severity: "bad", Title: "Auth / token errors", Detail: "Saw 401/403/token errors — the remote token may be expired or lacks permission."})
 	}
 	if kinds["quota"] > 0 {
-		out = append(out, telFinding{Severity: "bad", Title: "Quota exceeded", Detail: "The remote reported a storage/quota limit — rotate to another remote or raise the uploader cap."})
+		out = append(out, telFinding{Severity: "bad", Title: "Quota exceeded", Detail: "The remote reported a storage/quota limit — send this transfer to another remote, or wait for the quota window to reset."})
 	}
 	if kinds["network"] >= 3 {
 		out = append(out, telFinding{

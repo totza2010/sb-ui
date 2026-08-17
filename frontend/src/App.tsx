@@ -10,7 +10,7 @@ import { JobsLogs } from '@/pages/JobsLogs'
 import { Inventory } from '@/pages/Inventory'
 import { Backup } from '@/pages/Backup'
 import { Files } from '@/pages/Files'
-import { Uploader } from '@/pages/Uploader'
+import { Transfers } from '@/pages/Transfers'
 import { Autoscan } from '@/pages/Autoscan'
 import { Library } from '@/pages/Library'
 import { Discover } from '@/pages/Discover'
@@ -66,8 +66,10 @@ function AppInner() {
             <Route path="/inventory" element={<Inventory />} />
             <Route path="/backup" element={<Backup />} />
             <Route path="/files" element={<Files />} />
-            <Route path="/transfers" element={<Navigate to="/uploader" replace />} />
-            <Route path="/uploader" element={<Uploader />} />
+            <Route path="/transfers" element={<Transfers />} />
+            {/* The auto-upload rotation was lifted out to be rebuilt; keep the old path
+                working so existing links and bookmarks land on transfers. */}
+            <Route path="/uploader" element={<Navigate to="/transfers" replace />} />
             <Route path="/autoscan" element={<Autoscan />} />
             <Route path="/library" element={<Library />} />
             <Route path="/discover" element={<Discover />} />

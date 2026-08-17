@@ -784,3 +784,40 @@ func validEndpoint(s string) bool {
 	i := strings.Index(s, ":")
 	return i > 0 && remoteNameRE.MatchString(s[:i]) // remote:path
 }
+
+// ── shared helpers ────────────────────────────────────────────────────────────
+// These are transfer-domain utilities that happened to live in the uploader. They moved
+// here when the auto-upload rotation was lifted out, since fs and telemetry need them.
+
+// duBytes returns the apparent size of a local path in bytes (0 on failure).
+func duBytes(path string) int64 {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rc, out, _ := executor.Get().Run(ctx, []string{"du", "-sb", "--", path}, "")
+	if rc != 0 {
+		return 0
+	}
+	if f := strings.Fields(out); len(f) > 0 {
+		n, _ := strconv.ParseInt(f[0], 10, 64)
+		return n
+	}
+	return 0
+}
+
+// remoteOfDst returns the remote name from an rclone "remote:path" destination. A local
+// absolute path is returned unchanged.
+func remoteOfDst(dst string) string {
+	if i := strings.Index(dst, ":"); i > 0 && !strings.HasPrefix(dst, "/") {
+		return dst[:i]
+	}
+	return dst
+}
+
+// confInt reads an integer from a parsed rclone remote's config section (0 when absent).
+func confInt(p map[string]string, key string) int {
+	if p == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(p[key]))
+	return n
+}

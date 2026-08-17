@@ -990,42 +990,11 @@ export const useQueueTask = () =>
 export const useToggleTask = () =>
   useMutation<TransferTask, Error, string>({ mutationFn: (id) => request(`/tasks/${id}/toggle`, { method: 'POST' }) })
 
-export interface UploaderRemote { task_id?: string; name: string; dest: string; cap: string; cap_files?: number; gap_min: number; bwlimit: string; tpslimit: number }
-export interface BalanceConfig { enabled: boolean; max_streak: number; no_repeat: boolean }
 export interface QbitConfig { enabled: boolean; action: 'pause' | 'throttle'; dl_kbps: number; up_kbps: number }
-export interface PauseConfig { arr_disable: boolean; plex_kill_transcode: boolean; autoscan_hold: boolean; qbit: QbitConfig }
-export interface UploaderConfig {
-  enabled: boolean; source: string; subpath?: string; cap?: string; cap_files?: number; gap_min?: number; threshold: string; strategy: 'lru' | 'round_robin' | 'most_free'; balance?: BalanceConfig; pause?: PauseConfig; interval_minutes: number
-  allowed_from?: string; allowed_until?: string; min_age?: string; delete_empty_src?: boolean; opts?: TransferOpts; excludes?: string[]
-  remotes: UploaderRemote[]
-}
-export interface UploaderStatus {
-  enabled: boolean; source: string; threshold: string; last_size: string; last_size_bytes: number
-  last_check: string | null; message: string
-  remotes: { name: string; task_id?: string; cap: string; used_today: string; used_bytes: number; cap_files?: number; files_today?: number; last_upload: string | null; paused_until?: string | null }[]
-}
-export const useUploader = () =>
-  useQuery<UploaderConfig>({ queryKey: ['uploader'], queryFn: () => request('/uploader') })
-export const useSaveUploader = () =>
-  useMutation<{ ok: boolean }, Error, UploaderConfig>({ mutationFn: (c) => request('/uploader', { method: 'PUT', body: JSON.stringify(c) }) })
-export const useUploaderStatus = () =>
-  useQuery<UploaderStatus>({ queryKey: ['uploader-status'], queryFn: () => request('/uploader/status'), refetchInterval: 5000 })
-export const useUploaderRun = () =>
-  useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/uploader/run', { method: 'POST' }) })
-export interface BlockReport { action: string; qbit: string; arr: string; plex: string; autoscan: string }
-export const useUploaderTestBlock = () =>
-  useMutation<BlockReport, Error, { action: 'apply' | 'restore'; pause?: PauseConfig }>({ mutationFn: (b) => request('/uploader/test-block', { method: 'POST', body: JSON.stringify(b) }) })
 
-export interface SimStep { kind: 'move' | 'wait' | 'blocked'; at: string; until?: string; remote?: string; task_id?: string; bytes?: string; files?: number; max_transfer?: string; remaining?: string; rate?: string; took_min?: number; paused?: boolean; note?: string }
-export interface SimRemote { name: string; task_id?: string; bytes: string; files: number; cap: string; cap_files: number }
-export interface SimResult { steps: SimStep[]; summary: SimRemote[]; total: string; moved: string; done: boolean; elapsed_min: number }
-export interface CalibrationRemote { remote: string; runs: number; avg_speed: string; avg_speed_bytes: number; throttle_rate: number }
-export const useUploaderCalibration = () =>
-  useQuery<CalibrationRemote[]>({ queryKey: ['uploader-calibration'], queryFn: () => request('/uploader/calibration'), staleTime: 60_000 })
-export const useUploaderSimulate = () =>
-  useMutation<SimResult, Error, { total: string; avg_file: string; per_conn: string; scenario: string; flood_remote: string; config: UploaderConfig }>({
-    mutationFn: (b) => request('/uploader/simulate', { method: 'POST', body: JSON.stringify(b) }),
-  })
+// The auto-upload rotation's types and hooks lived here. They were removed with the
+// feature so nothing calls endpoints that no longer exist; the rotation is being rebuilt
+// on a domain core. See the wip/uploader-overhaul branch for the previous implementation.
 
 export interface QueueState { running: boolean; current: { job_id: string; label: string } | null; items: { job_id: string; label: string }[] }
 export const useQueue = () =>

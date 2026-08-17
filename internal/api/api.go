@@ -200,14 +200,11 @@ func Mount(r chi.Router) {
 	startScheduler()
 
 	// Smart Uploader (cloudplow++)
-	r.Get("/api/uploader", getUploader)
-	r.Put("/api/uploader", putUploader)
-	r.Get("/api/uploader/status", uploaderStatus)
-	r.Post("/api/uploader/run", uploaderRun)
-	r.Post("/api/uploader/test-block", uploaderTestBlock)
-	r.Post("/api/uploader/simulate", uploaderSimulate)
-	r.Get("/api/uploader/calibration", uploaderCalibration)
-	startUploader()
+	// The auto-upload rotation (cloudplow++) was lifted out to be rebuilt on a domain core:
+	// its state — the rotation cursor above all — had no owner, so it did not rotate, started
+	// at the wrong remote after any restart or config save, and miscounted against the daily
+	// caps. See the wip/uploader-overhaul branch for the parked implementation and the reasons.
+	// Nothing registers /api/uploader* until the rebuilt version lands.
 	startAuditWatcher()
 	r.Get("/api/rclone/status", rcloneStatus)
 	r.Get("/api/rclone/logs", rcloneLogs)
