@@ -59,6 +59,7 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
   const [schedule, setSchedule] = useState('')
   const [runMode, setRunMode] = useState<'queue' | 'now'>('queue')
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [section, setSection] = useState<'tasks' | 'scheduler' | 'queue'>('tasks')
 
   // Tasks (saved transfers) + actions
   const qc = useQueryClient()
@@ -113,127 +114,154 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
 
   const cmdPreview = `rclone ${op} <source> ${dst || '<dest>'} --stats 1s ${buildFlags(op, opts, dryRun).join(' ')}`.replace(/\s+/g, ' ').trim()
 
+  const activeSched = tasks.filter((t) => t.schedule && !t.disabled).length
+  const SECTIONS: { key: 'tasks' | 'scheduler' | 'queue'; icon: typeof Clock; label: string; summary: string }[] = [
+    { key: 'tasks', icon: FilePlus2, label: 'Tasks', summary: tasks.length ? `${tasks.length} saved` : 'none saved' },
+    { key: 'scheduler', icon: Clock, label: 'Scheduler', summary: activeSched ? `${activeSched} active` : 'none scheduled' },
+    { key: 'queue', icon: ListPlus, label: 'Queue', summary: queue ? `${queue.items.length} queued · ${queue.running ? 'running' : 'paused'}` : 'empty' },
+  ]
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
-        <p className="text-sm text-muted-foreground">
-          Run and watch rclone copy / move / sync jobs — manual, queued, or scheduled. Browse remotes on the Files page.
-        </p>
-        <Button size="sm" className="gap-1.5 shrink-0" onClick={openNew}>
+    <div className="space-y-3">
+      {/* toolbar */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/70 bg-card px-3 py-2 shadow-sm">
+        <p className="text-xs text-muted-foreground">Run and watch rclone copy / move / sync jobs — manual, queued, or scheduled. Browse remotes on the Files page.</p>
+        <span className="flex-1" />
+        <Button size="sm" className="h-8 gap-1.5 shrink-0" onClick={openNew}>
           <ArrowRightLeft className="h-3.5 w-3.5" />New transfer
         </Button>
       </div>
 
-      {/* Saved tasks (run / queue / schedule) */}
-      {tasks.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Tasks</p>
-          <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
-            {tasks.map((t) => (
-              <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className={cn('text-sm font-medium truncate', t.disabled ? 'text-muted-foreground line-through' : 'text-foreground')}>{t.name}</span>
-                    <Badge variant="secondary" className="text-[9px] capitalize">{t.op}</Badge>
-                    {t.schedule && <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><Clock className="h-3 w-3" />{t.schedule}</span>}
-                    {t.disabled && <Badge variant="secondary" className="text-[9px]">paused</Badge>}
-                  </div>
-                  <p className="font-mono text-[11px] text-muted-foreground truncate">
-                    {t.items.length} item(s) → {t.dst}
-                    {t.schedule && !t.disabled && t.next_run && <span className="ml-2 text-muted-foreground/70">· next {new Date(t.next_run).toLocaleString()}</span>}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => runTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><Play className="h-3.5 w-3.5" />Run</Button>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => queueTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><ListPlus className="h-3.5 w-3.5" />Queue</Button>
-                  {t.schedule && (
-                    <Button size="icon" variant="ghost" className="h-8 w-8" title={t.disabled ? 'Resume schedule' : 'Pause schedule'} onClick={() => toggleTask.mutate(t.id, { onSuccess: invalidateTasks })}>
-                      {t.disabled ? <Play className="h-3.5 w-3.5 text-success" /> : <Pause className="h-3.5 w-3.5 text-warning" />}
-                    </Button>
-                  )}
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(t)}><Pencil className="h-3.5 w-3.5" /></Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => deleteTask.mutate(t.id, { onSuccess: invalidateTasks })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Scheduler — tasks with a cron schedule (always shown) */}
-      <div>
-        <div className="flex items-center gap-2 mb-1.5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Scheduler</p>
-          <span className="text-[11px] text-muted-foreground">{tasks.filter((t) => t.schedule && !t.disabled).length} active</span>
-        </div>
-        <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
-          {!tasks.some((t) => t.schedule) && (
-            <div className="px-4 py-6 text-center text-[11px] text-muted-foreground">No scheduled tasks. Add a Schedule (cron) when saving a task to run it automatically.</div>
-          )}
-          {tasks.filter((t) => t.schedule).map((t) => (
-              <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
-                <Clock className={cn('h-4 w-4 shrink-0', t.disabled ? 'text-muted-foreground/50' : 'text-primary')} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className={cn('text-sm font-medium truncate', t.disabled ? 'text-muted-foreground line-through' : 'text-foreground')}>{t.name}</span>
-                    <code className="text-[10px] text-muted-foreground">{t.schedule}</code>
-                    <Badge variant={t.disabled ? 'secondary' : 'success'} className="text-[9px]">{t.disabled ? 'paused' : 'active'}</Badge>
-                  </div>
-                  <p className="text-[11px] text-muted-foreground">
-                    {t.disabled ? 'paused' : t.next_run ? `next run ${new Date(t.next_run).toLocaleString()}` : 'computing…'}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => runTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><Play className="h-3.5 w-3.5" />Run now</Button>
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => toggleTask.mutate(t.id, { onSuccess: invalidateTasks })}>
-                    {t.disabled ? <><Play className="h-3.5 w-3.5" />Resume</> : <><Pause className="h-3.5 w-3.5" />Pause</>}
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
+      {/* master–detail: Tasks / Scheduler / Queue */}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-stretch">
+        {/* rail */}
+        <div className="flex shrink-0 gap-1.5 overflow-x-auto lg:w-56 lg:flex-col lg:overflow-visible">
+          {SECTIONS.map((s) => {
+            const active = section === s.key
+            const Icon = s.icon
+            return (
+              <button key={s.key} onClick={() => setSection(s.key)}
+                className={cn('flex min-w-[9rem] items-center gap-2.5 rounded-lg border px-2.5 py-2 text-left transition-colors lg:min-w-0',
+                  active ? 'border-primary/50 bg-primary/5' : 'border-border/70 bg-card hover:bg-accent/40')}>
+                <Icon className={cn('h-4 w-4 shrink-0', active ? 'text-primary' : 'text-muted-foreground')} />
+                <span className="min-w-0 flex-1">
+                  <span className={cn('block truncate text-xs font-medium', active ? 'text-foreground' : 'text-foreground/90')}>{s.label}</span>
+                  <span className="block truncate text-[10px] text-muted-foreground">{s.summary}</span>
+                </span>
+              </button>
+            )
+          })}
         </div>
 
-      {/* Queue (pending, runs one at a time) — always shown so it can be paused */}
-      {queue && (
-        <div>
-          <div className="flex items-center gap-2 mb-1.5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Queue</p>
-            <Badge variant={queue.running ? 'default' : 'secondary'} className="text-[9px]">{queue.running ? 'running' : 'paused'}</Badge>
-            <span className="text-[11px] text-muted-foreground">{queue.items.length} queued</span>
-            <div className="ml-auto flex gap-1">
-              {queue.running
-                ? <Button size="sm" variant="outline" className="gap-1.5" onClick={() => doQueue('/stop')}><Pause className="h-3.5 w-3.5" />Pause</Button>
-                : <Button size="sm" variant="outline" className="gap-1.5" onClick={() => doQueue('/start')}><Play className="h-3.5 w-3.5" />Start</Button>}
-              <Button size="sm" variant="ghost" className="gap-1.5 text-destructive" onClick={() => doQueue('/purge')} disabled={queue.items.length === 0}><Trash2 className="h-3.5 w-3.5" />Purge</Button>
+        {/* detail pane */}
+        <div className="min-w-0 flex-1">
+          {/* Tasks — saved transfers (run / queue / edit / schedule) */}
+          {section === 'tasks' && (
+            <div className="rounded-lg border border-border divide-y divide-border overflow-hidden">
+              {tasks.length === 0 && (
+                <div className="px-4 py-10 text-center text-xs text-muted-foreground">No saved tasks yet — press <span className="font-medium text-foreground">New transfer</span>, then <span className="font-medium text-foreground">Save task</span>.</div>
+              )}
+              {tasks.map((t) => (
+                <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={cn('text-sm font-medium truncate', t.disabled ? 'text-muted-foreground line-through' : 'text-foreground')}>{t.name}</span>
+                      <Badge variant="secondary" className="text-[9px] capitalize">{t.op}</Badge>
+                      {t.schedule && <span className="flex items-center gap-1 text-[10px] text-muted-foreground"><Clock className="h-3 w-3" />{t.schedule}</span>}
+                      {t.disabled && <Badge variant="secondary" className="text-[9px]">paused</Badge>}
+                    </div>
+                    <p className="font-mono text-[11px] text-muted-foreground truncate">
+                      {t.items.length} item(s) → {t.dst}
+                      {t.schedule && !t.disabled && t.next_run && <span className="ml-2 text-muted-foreground/70">· next {new Date(t.next_run).toLocaleString()}</span>}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => runTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><Play className="h-3.5 w-3.5" />Run</Button>
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => queueTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><ListPlus className="h-3.5 w-3.5" />Queue</Button>
+                    {t.schedule && (
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title={t.disabled ? 'Resume schedule' : 'Pause schedule'} onClick={() => toggleTask.mutate(t.id, { onSuccess: invalidateTasks })}>
+                        {t.disabled ? <Play className="h-3.5 w-3.5 text-success" /> : <Pause className="h-3.5 w-3.5 text-warning" />}
+                      </Button>
+                    )}
+                    <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEdit(t)}><Pencil className="h-3.5 w-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => deleteTask.mutate(t.id, { onSuccess: invalidateTasks })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
+                  </div>
+                </div>
+              ))}
             </div>
-          </div>
-          <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
-            {queue.current && (
-              <div className="flex items-center gap-3 px-4 py-2 bg-primary/5">
-                <span className="text-[11px] text-primary w-5 shrink-0">▶</span>
-                <span className="font-mono text-xs text-foreground truncate flex-1 min-w-0">{queue.current.label}</span>
-                <Badge variant="default" className="text-[9px]">running</Badge>
-              </div>
-            )}
-            {!queue.current && queue.items.length === 0 && (
-              <div className="px-4 py-6 text-center text-[11px] text-muted-foreground">Queue empty. Pause it, then “Queue” a task to line jobs up.</div>
-            )}
-            {queue.items.map((it, i) => (
-              <div key={it.job_id} className="flex items-center gap-3 px-4 py-2">
-                <span className="text-[11px] text-muted-foreground w-5 shrink-0">{i + 1}</span>
-                <span className="font-mono text-xs text-foreground truncate flex-1 min-w-0">{it.label}</span>
-                <Badge variant="secondary" className="text-[9px]">queued</Badge>
-                <div className="flex items-center gap-0.5 shrink-0">
-                  <Button size="icon" variant="ghost" className="h-7 w-7" disabled={i === 0} onClick={() => doQueue(`/${it.job_id}/up`)}><ArrowUp className="h-3.5 w-3.5" /></Button>
-                  <Button size="icon" variant="ghost" className="h-7 w-7" disabled={i === queue.items.length - 1} onClick={() => doQueue(`/${it.job_id}/down`)}><ArrowDown className="h-3.5 w-3.5" /></Button>
-                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => doQueue(`/${it.job_id}/remove`)}><X className="h-3.5 w-3.5 text-destructive" /></Button>
+          )}
+
+          {/* Scheduler — tasks with a cron schedule */}
+          {section === 'scheduler' && (
+            <div className="rounded-lg border border-border divide-y divide-border overflow-hidden">
+              {!tasks.some((t) => t.schedule) && (
+                <div className="px-4 py-10 text-center text-xs text-muted-foreground">No scheduled tasks. Add a Schedule (cron) when saving a task to run it automatically.</div>
+              )}
+              {tasks.filter((t) => t.schedule).map((t) => (
+                <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
+                  <Clock className={cn('h-4 w-4 shrink-0', t.disabled ? 'text-muted-foreground/50' : 'text-primary')} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={cn('text-sm font-medium truncate', t.disabled ? 'text-muted-foreground line-through' : 'text-foreground')}>{t.name}</span>
+                      <code className="text-[10px] text-muted-foreground">{t.schedule}</code>
+                      <Badge variant={t.disabled ? 'secondary' : 'success'} className="text-[9px]">{t.disabled ? 'paused' : 'active'}</Badge>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      {t.disabled ? 'paused' : t.next_run ? `next run ${new Date(t.next_run).toLocaleString()}` : 'computing…'}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => runTask.mutate(t.id, { onSuccess: (d) => setAutoOpenId(d.job_id) })}><Play className="h-3.5 w-3.5" />Run now</Button>
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => toggleTask.mutate(t.id, { onSuccess: invalidateTasks })}>
+                      {t.disabled ? <><Play className="h-3.5 w-3.5" />Resume</> : <><Pause className="h-3.5 w-3.5" />Pause</>}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Queue (pending, runs one at a time) */}
+          {section === 'queue' && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Badge variant={queue?.running ? 'default' : 'secondary'} className="text-[9px]">{queue?.running ? 'running' : 'paused'}</Badge>
+                <span className="text-[11px] text-muted-foreground">{queue?.items.length ?? 0} queued</span>
+                <div className="ml-auto flex gap-1">
+                  {queue?.running
+                    ? <Button size="sm" variant="outline" className="gap-1.5" onClick={() => doQueue('/stop')}><Pause className="h-3.5 w-3.5" />Pause</Button>
+                    : <Button size="sm" variant="outline" className="gap-1.5" onClick={() => doQueue('/start')}><Play className="h-3.5 w-3.5" />Start</Button>}
+                  <Button size="sm" variant="ghost" className="gap-1.5 text-destructive" onClick={() => doQueue('/purge')} disabled={!queue || queue.items.length === 0}><Trash2 className="h-3.5 w-3.5" />Purge</Button>
                 </div>
               </div>
-            ))}
-          </div>
+              <div className="rounded-lg border border-border divide-y divide-border overflow-hidden">
+                {queue?.current && (
+                  <div className="flex items-center gap-3 px-4 py-2 bg-primary/5">
+                    <span className="text-[11px] text-primary w-5 shrink-0">▶</span>
+                    <span className="font-mono text-xs text-foreground truncate flex-1 min-w-0">{queue.current.label}</span>
+                    <Badge variant="default" className="text-[9px]">running</Badge>
+                  </div>
+                )}
+                {(!queue || (!queue.current && queue.items.length === 0)) && (
+                  <div className="px-4 py-10 text-center text-xs text-muted-foreground">Queue empty. Pause it, then “Queue” a task to line jobs up.</div>
+                )}
+                {queue?.items.map((it, i) => (
+                  <div key={it.job_id} className="flex items-center gap-3 px-4 py-2">
+                    <span className="text-[11px] text-muted-foreground w-5 shrink-0">{i + 1}</span>
+                    <span className="font-mono text-xs text-foreground truncate flex-1 min-w-0">{it.label}</span>
+                    <Badge variant="secondary" className="text-[9px]">queued</Badge>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <Button size="icon" variant="ghost" className="h-7 w-7" disabled={i === 0} onClick={() => doQueue(`/${it.job_id}/up`)}><ArrowUp className="h-3.5 w-3.5" /></Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7" disabled={i === queue.items.length - 1} onClick={() => doQueue(`/${it.job_id}/down`)}><ArrowDown className="h-3.5 w-3.5" /></Button>
+                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => doQueue(`/${it.job_id}/remove`)}><X className="h-3.5 w-3.5 text-destructive" /></Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       {/* New transfer dialog — hidden while the picker is open (avoid nested modals) */}
       <Dialog open={dlg && !picker} onOpenChange={(o) => { if (!o && !picker) setDlg(false) }}>
@@ -373,9 +401,8 @@ export function TransfersActivity({ autoOpenId }: { autoOpenId: string | null })
   const clearJobs = useClearJobs()
   return (
     <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Activity</p>
-        {transfers.length > 0 && (
+      {transfers.length > 0 && (
+        <div className="mb-1.5 flex items-center justify-end">
           <div className="flex items-center gap-4">
             <button
               onClick={() => purgeTel.mutate(undefined, { onSuccess: () => qc.invalidateQueries({ queryKey: ['telemetry'] }) })}
@@ -390,8 +417,8 @@ export function TransfersActivity({ autoOpenId }: { autoOpenId: string | null })
               <Trash2 className="h-3 w-3" />Clear finished
             </button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
       <div className="border border-border rounded-lg divide-y divide-border overflow-hidden">
         {transfers.length === 0 && (
           <div className="px-4 py-10 text-center text-sm text-muted-foreground">
@@ -408,7 +435,9 @@ export function TransfersActivity({ autoOpenId }: { autoOpenId: string | null })
 
 // ── one expandable activity row (RcloneBrowser-style inline job view) ──────────
 function ActivityRow({ job, autoOpen }: { job: { id: string; tag: string; status: 'pending' | 'running' | 'completed' | 'failed' | 'stopped'; created_at: string }; autoOpen: boolean }) {
-  const [open, setOpen] = useState(autoOpen)
+  // Auto-expand a running job so an in-flight upload is visible right away (e.g. after a
+  // page refresh) — you can see it's still working in the background.
+  const [open, setOpen] = useState(autoOpen || job.status === 'running')
   const [out, setOut] = useState(false)
   const [ana, setAna] = useState(false)
   const stop = useStopTransfer()
@@ -771,7 +800,12 @@ function TransferProgress({ jobId, running }: { jobId: string | null; running?: 
   const hasTiming = !!(data?.started_at || data?.finished_at)
   // Always show the info box (even with no data → dashes), per request.
   const d = data ?? ({} as NonNullable<typeof data>)
-  const pct = d.totalBytes ? Math.min(100, Math.round((d.bytes / d.totalBytes) * 100)) : 0
+  // An uploader job runs with --max-transfer, so rclone's totalBytes is the whole source
+  // but it stops at the cap. Show progress/ETA against the cap (the real target).
+  const capped = !!d.cap && d.cap > 0 && d.cap < (d.totalBytes || 0)
+  const target = capped ? d.cap! : d.totalBytes
+  const pct = target ? Math.min(100, Math.round((d.bytes / target) * 100)) : 0
+  const eta = capped && d.speed > 0 ? Math.max(0, (d.cap! - d.bytes) / d.speed) : d.eta
   const dash = (s: string) => (hasStats ? s : '—')
   return (
     <div className="space-y-3 rounded-lg border border-border bg-card p-3">
@@ -779,20 +813,23 @@ function TransferProgress({ jobId, running }: { jobId: string | null; running?: 
         <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-muted-foreground">
           {d.started_at && <span>Started {new Date(d.started_at).toLocaleString()}</span>}
           {running
-            ? d.eta > 0 && <span>Est. finish {new Date(Date.now() + d.eta * 1000).toLocaleString()}</span>
+            ? eta > 0 && <span>Est. finish {new Date(Date.now() + eta * 1000).toLocaleString()}</span>
             : d.finished_at && <span>Finished {new Date(d.finished_at).toLocaleString()}</span>}
         </div>
       )}
       {/* Summary grid (RcloneBrowser-style boxed stats) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-        <Stat label="Transferred" value={dash(`${hBytes(d.bytes)} / ${hBytes(d.totalBytes)} (${pct}%)`)} />
+        <Stat label={capped ? 'Transferred (capped)' : 'Transferred'} value={dash(`${hBytes(d.bytes)} / ${hBytes(target)} (${pct}%)`)} />
         <Stat label="Speed" value={dash(hSpeed(d.speed))} />
         <Stat label="Transfers" value={dash(`${d.transfers ?? 0} / ${d.totalTransfers ?? 0}`)} />
-        <Stat label="ETA" value={dash(hEta(d.eta))} />
+        <Stat label="ETA" value={dash(hEta(eta))} />
         <Stat label="Elapsed" value={dash(hEta(d.elapsedTime))} />
         <Stat label="Checks" value={dash(`${d.checks ?? 0} / ${d.totalChecks ?? 0}`)} />
         <Stat label="Errors" value={dash(String(d.errors ?? 0))} danger={(d.errors ?? 0) > 0} />
       </div>
+      {capped && (
+        <p className="text-[10px] text-muted-foreground">Stops at the daily cap <span className="font-mono text-foreground">{hBytes(d.cap!)}</span> (<span className="font-mono">--max-transfer</span>) — of <span className="font-mono">{hBytes(d.totalBytes)}</span> in the source; the rest goes to the next remotes in the rotation.</p>
+      )}
 
       {/* Overall bar */}
       <div>
@@ -811,7 +848,7 @@ function TransferProgress({ jobId, running }: { jobId: string | null; running?: 
               <div key={f.name} className="space-y-1">
                 <div className="flex items-center justify-between text-[11px] gap-3">
                   <span className="font-mono text-foreground truncate">{f.name}</span>
-                  <span className="text-muted-foreground shrink-0 tabular-nums">{fp}% · {hSpeed(f.speed)} · {hEta(f.eta)}</span>
+                  <span className="text-muted-foreground shrink-0 tabular-nums">{hBytes(f.bytes)} / {hBytes(f.size)} · {fp}% · {hSpeed(f.speed)} · {hEta(f.eta)}</span>
                 </div>
                 <div className="w-full bg-secondary rounded-full h-1.5 overflow-hidden">
                   <div className="h-1.5 rounded-full bg-primary/70 transition-all duration-500" style={{ width: `${fp}%` }} />

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,13 +26,13 @@ import (
 // Name:Dest, governed by this remote's daily caps + gap. (One source → many
 // destinations is the whole point; the destinations are plain rclone remotes.)
 type uploaderRemote struct {
-	Name      string `json:"name"`             // rclone remote name (ledger key + label)
-	Dest      string `json:"dest"`             // path within the remote ("" = root)
-	CapPerDay string `json:"cap"`              // bytes/24h, "" = unlimited (gdrive 750G); teldrive often blank
-	CapFiles  int    `json:"cap_files"`        // files/24h, 0 = unlimited (teldrive rate/ban dimension)
-	GapMin    int    `json:"gap_min"`          // min minutes between uses of this remote
-	Bwlimit   string `json:"bwlimit"`          // bandwidth, e.g. "40M"
-	Tpslimit  int    `json:"tpslimit"`         // teldrive ban-avoidance
+	Name      string `json:"name"`              // rclone remote name (ledger key + label)
+	Dest      string `json:"dest"`              // path within the remote ("" = root)
+	CapPerDay string `json:"cap"`               // bytes/24h, "" = unlimited (gdrive 750G); teldrive often blank
+	CapFiles  int    `json:"cap_files"`         // files/24h, 0 = unlimited (teldrive rate/ban dimension)
+	GapMin    int    `json:"gap_min"`           // min minutes between uses of this remote
+	Bwlimit   string `json:"bwlimit"`           // bandwidth, e.g. "40M"
+	Tpslimit  int    `json:"tpslimit"`          // teldrive ban-avoidance
 	TaskID    string `json:"task_id,omitempty"` // LEGACY: old task-mode entries, migrated to raw on load
 }
 
@@ -85,11 +86,12 @@ func splitRemoteDst(dst string) (name, sub string) {
 
 // balanceConfig is the opt-in capacity-balancing module: rank remotes by how full
 // each account already is (lowest used → uploaded first, to level them) while never
-// hammering one remote — never twice in a row, and a periodic "relief" upload to a
-// fuller/neglected remote so request load spreads across every account.
+// hammering one remote — never twice in a row, and never more than MaxStreak uploads
+// to the same remote per cycle. Without that per-remote cap, a big capacity gap means
+// the emptiest one or two accounts win every pick and the others are never used.
 type balanceConfig struct {
 	Enabled   bool `json:"enabled"`
-	MaxStreak int  `json:"max_streak"` // low-side uploads before one relief pick (0 = no relief)
+	MaxStreak int  `json:"max_streak"` // max uploads one remote may take per cycle (0 = uncapped)
 	NoRepeat  bool `json:"no_repeat"`  // never pick the same remote twice in a row
 }
 
@@ -105,33 +107,28 @@ type pauseConfig struct {
 
 type uploaderConfig struct {
 	Enabled         bool             `json:"enabled"`
-	Source          string           `json:"source"`   // local staging path, e.g. /mnt/local/Media
-	Subpath         string           `json:"subpath"`  // shared path within each destination remote (per-remote Dest overrides)
-	CapPerDay       string           `json:"cap"`      // shared daily byte cap (per-remote CapPerDay overrides)
-	CapFiles        int              `json:"cap_files"` // shared daily file cap (per-remote CapFiles overrides)
-	GapMin          int              `json:"gap_min"`  // shared min minutes between reuses (per-remote GapMin overrides)
+	Source          string           `json:"source"`           // local staging path, e.g. /mnt/local/Media
+	Subpath         string           `json:"subpath"`          // shared path within each destination remote (per-remote Dest overrides)
+	CapPerDay       string           `json:"cap"`              // shared daily byte cap (per-remote CapPerDay overrides)
+	CapFiles        int              `json:"cap_files"`        // shared daily file cap (per-remote CapFiles overrides)
+	GapMin          int              `json:"gap_min"`          // shared min minutes between reuses (per-remote GapMin overrides)
 	Threshold       string           `json:"threshold"`        // upload once source ≥ this size (e.g. "500G")
-	Strategy        string           `json:"strategy"`         // lru | round_robin | most_free
-	Balance         balanceConfig    `json:"balance"`          // capacity-balancing module (overrides Strategy when enabled)
+	Op              string           `json:"op"`               // "move" (default) | "copy"; move = source freed, appears via unionfs
+	DryRun          bool             `json:"dry_run"`          // run rclone with --dry-run: real command, moves nothing, no state touched
+	Sequence        []string         `json:"sequence"`         // rotation order: remote names (may repeat); the single source of truth
+	Strategy        string           `json:"strategy"`         // DEPRECATED (migrated to Sequence): lru | round_robin | most_free
+	Balance         balanceConfig    `json:"balance"`          // DEPRECATED (migrated to Sequence): old capacity-balancing module
 	Pause           pauseConfig      `json:"pause"`            // pause/throttle other services during an upload
 	IntervalMinutes int              `json:"interval_minutes"` // how often to check (min 1)
 	AllowedFrom     string           `json:"allowed_from"`     // HH:MM, "" = anytime (off-peak window)
 	AllowedUntil    string           `json:"allowed_until"`    // HH:MM
 	MinAge          string           `json:"min_age"`          // skip files newer than this (e.g. "15m") → don't upload in-progress
+	EtaSpeed        string           `json:"eta_speed"`        // assumed speed for the plan ETA, e.g. "50M"; blank = per-remote calibrated avg
 	DeleteEmptySrc  bool             `json:"delete_empty_src"` // tidy staging after move
 	Opts            transferOpts     `json:"opts"`             // rclone transfer flags applied to every destination
 	Excludes        []string         `json:"excludes"`         // LEGACY: migrated into Opts.Exclude on load
 	Remotes         []uploaderRemote `json:"remotes"`
 }
-
-// balanceState carries the balancing module's cross-cycle memory.
-type balanceState struct {
-	streak int    // consecutive low-side (least-used) picks so far
-	last   string // remote name of the previous pick (for the no-repeat rule)
-}
-
-// defaultMaxStreak is used when balancing is on but no cap is configured.
-const defaultMaxStreak = 3
 
 type ledgerEvent struct {
 	At    time.Time `json:"at"`
@@ -142,6 +139,7 @@ type ledgerRemote struct {
 	Events      []ledgerEvent `json:"events"`
 	LastUpload  time.Time     `json:"last_upload"`
 	PausedUntil time.Time     `json:"paused_until,omitempty"` // set on FLOOD_WAIT/429 — skip until elapsed
+	Uploaded    int64         `json:"uploaded,omitempty"`     // cumulative lifetime bytes we've moved to this remote (fill proxy when the backend can't report usage)
 }
 
 const (
@@ -149,20 +147,46 @@ const (
 	uploaderLedgerRel  = "cache/uploader_ledger.json"
 	uploaderWindow     = 24 * time.Hour
 	uploaderFloodPause = 60 * time.Minute // cooldown after a rate-limit/ban hit
+	uploaderCooldown   = 45 * time.Second // pause after a remote finishes before re-listing + rotating to the next
 )
 
 var (
-	upMu       sync.Mutex
-	ucfg       uploaderConfig
-	ledger     = map[string]*ledgerRemote{}
-	upLoaded   bool
-	upLastSize int64
-	upLastAt   time.Time
-	upLastMsg  string
-	rrIndex    int
-	balState   balanceState
-	upOnce     sync.Once
+	upMu        sync.Mutex
+	ucfg        uploaderConfig
+	ledger      = map[string]*ledgerRemote{}
+	upLoaded    bool
+	upLastSize  int64
+	upLastAt    time.Time
+	upLastMsg   string
+	upLastPlan  *uploadPlan // last manual "Check now" dry-run plan
+	upChecking  bool        // a manual "Check now" is measuring/planning right now
+	seqCursor   int         // position of the last pick in cfg.Sequence (advances each pick)
+	upLastMoved int64       // bytes moved by the most recent cycle (0 = nothing) — drives the loop cooldown
+	upOnce      sync.Once
+
+	// cached per-remote fills for the (scan-free) rotation-order projection, refreshed in
+	// the background so the order renders without a manual "Check now".
+	balFillM    map[string]int64
+	balFillAt   time.Time
+	balFillBusy bool
 )
+
+// cachedBalanceFill returns the last-known per-remote fills, kicking off a background
+// refresh when the cache is empty or stale. Caller holds upMu.
+func cachedBalanceFill() map[string]int64 {
+	if !balFillBusy && (balFillM == nil || time.Since(balFillAt) > 90*time.Second) {
+		balFillBusy = true
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			m := balanceFill(ctx)
+			cancel()
+			upMu.Lock()
+			balFillM, balFillAt, balFillBusy = m, time.Now(), false
+			upMu.Unlock()
+		}()
+	}
+	return balFillM
+}
 
 func ensureUploader() { // under upMu
 	if upLoaded {
@@ -173,16 +197,16 @@ func ensureUploader() { // under upMu
 	if ledger == nil {
 		ledger = map[string]*ledgerRemote{}
 	}
+	loadHistory()
 	if ucfg.IntervalMinutes <= 0 {
 		ucfg.IntervalMinutes = 15
-	}
-	if ucfg.Strategy == "" {
-		ucfg.Strategy = "lru"
 	}
 	if ucfg.Pause.Qbit.Action == "" {
 		ucfg.Pause.Qbit.Action = "pause"
 	}
-	migrateTaskRemotes() // one-time: convert legacy task-mode destinations to raw remotes
+	migrateTaskRemotes()               // one-time: convert legacy task-mode destinations to raw remotes
+	ucfg.Sequence = normSequence(ucfg) // migrate old strategy/balance configs to an even sequence
+	loadResume()                       // restore a pending resume target across restarts
 	upLoaded = true
 }
 
@@ -291,13 +315,13 @@ func migrateTaskRemotes() {
 // Injectable seams for the block actions, so tests can assert the orchestration
 // (what runs, in what order) without touching a real qBittorrent / *arr.
 var (
-	qbitPauseFn    = qbitPause
-	qbitResumeFn   = qbitResume
+	qbitPauseFn      = qbitPause
+	qbitResumeFn     = qbitResume
 	arrImportsFn     = arrSetImportsEnabled
 	plexKillFn       = startPlexTranscodeKill
 	plexUnkillFn     = stopPlexTranscodeKill
-	autoscanHoldFn   = autoscanHold                  // external autoscan container (docker pause)
-	autoscanPauseFn  = func() { autoscanSvc().Pause() }  // built-in autoscan hold
+	autoscanHoldFn   = autoscanHold                     // external autoscan container (docker pause)
+	autoscanPauseFn  = func() { autoscanSvc().Pause() } // built-in autoscan hold
 	autoscanResumeFn = func() { autoscanSvc().Resume() }
 )
 
@@ -333,6 +357,24 @@ func restoreUploadPause(p pauseConfig) {
 		autoscanResumeFn()        // release the built-in autoscan queue
 		_ = autoscanHoldFn(false) // and the external container, if any
 	}
+}
+
+// remoteFree is THE definition of "how many bytes may this remote still take today":
+// its daily cap minus what it used inside the rolling window. Returns -1 for an
+// unlimited remote and 0 when the cap is spent.
+//
+// Every consumer goes through this — the picker, the plan, the free-space map and the
+// self-test command preview — so the number the UI shows, the number the plan splits by
+// and the --max-transfer the run actually passes to rclone can never drift apart.
+func remoteFree(r uploaderRemote, led map[string]*ledgerRemote, now time.Time) int64 {
+	capB := parseCapBytes(r.CapPerDay)
+	if capB <= 0 {
+		return -1 // unlimited
+	}
+	if f := capB - usedInWindow(led, remoteKey(r), now); f > 0 {
+		return f
+	}
+	return 0
 }
 
 func usedInWindow(led map[string]*ledgerRemote, name string, now time.Time) int64 {
@@ -379,11 +421,36 @@ func ledgerAdd(led map[string]*ledgerRemote, name string, bytes int64, files int
 	}
 	lr.Events = append(kept, ledgerEvent{At: now, Bytes: bytes, Files: files})
 	lr.LastUpload = now
+	lr.Uploaded += bytes // lifetime tally — a fill proxy for the balancer
 }
 
 func recordUpload(name string, bytes int64, files int, now time.Time) {
 	ledgerAdd(ledger, name, bytes, files, now)
 	store.WriteJSON(uploaderLedgerRel, ledger)
+}
+
+// balanceFill is the per-remote fill signal for capacity balancing: live rclone `about`
+// used bytes when the backend reports them, else our persisted cumulative-uploaded tally
+// — so balancing still works for remotes that can't report usage (e.g. teldrive). Not
+// called with upMu held.
+func balanceFill(ctx context.Context) map[string]int64 {
+	m := remoteUsedBytes(ctx) // rclone `about` (works for gdrive/onedrive/…)
+	if m == nil {
+		m = map[string]int64{}
+	}
+	for name, used := range teldriveUsedBytes(ctx) { // real per-account fill for teldrive
+		if used > 0 {
+			m[name] = used
+		}
+	}
+	upMu.Lock()
+	for key, lr := range ledger { // last resort: our own cumulative-uploaded tally
+		if lr != nil && lr.Uploaded > 0 && m[key] == 0 {
+			m[key] = lr.Uploaded
+		}
+	}
+	upMu.Unlock()
+	return m
 }
 
 // pauseRemote benches a remote after a rate-limit/ban hit so the picker skips it.
@@ -399,12 +466,12 @@ func pauseRemote(name string, until time.Time) {
 
 // pickCtx bundles everything the picker needs beyond the remotes + ledger, so the
 // live uploader, the dry-run simulator and tests all drive selectRemote identically.
+// Rotation is a single explicit sequence of remote names (may repeat); the picker just
+// advances a cursor along it and skips any step that isn't eligible right now.
 type pickCtx struct {
-	strategy string           // lru | round_robin | most_free (used when Balance is off)
-	rr       *int             // round-robin cursor
-	balance  balanceConfig    // capacity-balancing module (overrides strategy when Enabled)
-	bstate   *balanceState    // the module's cross-cycle memory
-	used     map[string]int64 // total used bytes per remote name (balance ranking input)
+	seq    []string // the rotation sequence (remote names, repeats allowed)
+	cursor *int     // position of the last pick in seq; advances each call
+	resume string   // a remote to finish first (interrupted upload); doesn't advance the cursor
 }
 
 type upCand struct {
@@ -437,157 +504,240 @@ func eligibleCands(remotes []uploaderRemote, led map[string]*ledgerRemote, now t
 			reason = "all remotes hit their daily caps"
 			continue // hit the daily file/request budget (teldrive rate dimension)
 		}
-		used := usedInWindow(led, key, now)
-		free := int64(-1)
-		if capB := parseCapBytes(r.CapPerDay); capB > 0 {
-			if used >= capB {
-				reason = "all remotes hit their daily caps"
-				continue
-			}
-			free = capB - used
+		free := remoteFree(r, led, now)
+		if free == 0 { // cap spent for this window
+			reason = "all remotes hit their daily caps"
+			continue
 		}
 		cands = append(cands, upCand{r, free})
 	}
 	return cands, reason
 }
 
-// ── strategy pickers: each returns the chosen index into cands ──────────────────
+// ── rotation picker: walk the explicit sequence, skipping ineligible steps ───────
 
-// pickMostFree favours the remote with the largest remaining daily allowance
-// (unlimited wins); ties keep input order.
-func pickMostFree(cands []upCand) int {
-	best := 0
-	for i := 1; i < len(cands); i++ {
-		if moreFree(cands[i].free, cands[best].free) {
-			best = i
+// pickBySequence advances the cursor along seq and returns the index (into cands) of the
+// next remote that is currently eligible. Steps whose remote is capped/cooling/benched are
+// skipped. Returns -1 when a full lap finds none eligible (caller then waits for a reset).
+// An empty sequence degrades to plain round-robin over the eligible candidates, so the
+// uploader still works before a sequence is authored.
+func pickBySequence(cands []upCand, seq []string, cursor *int) int {
+	if len(cands) == 0 {
+		return -1
+	}
+	// cursor is the NEXT position to try; a fresh cursor (0) picks seq[0]. After choosing
+	// position p the cursor advances to p+1.
+	if len(seq) == 0 {
+		i := ((*cursor % len(cands)) + len(cands)) % len(cands)
+		*cursor = i + 1
+		return i
+	}
+	byName := make(map[string]int, len(cands))
+	for i, c := range cands {
+		byName[c.r.Name] = i
+	}
+	n := len(seq)
+	start := ((*cursor % n) + n) % n
+	for k := 0; k < n; k++ {
+		pos := (start + k) % n
+		if idx, ok := byName[seq[pos]]; ok {
+			*cursor = pos + 1
+			return idx
 		}
 	}
-	return best
+	return -1
 }
 
-func moreFree(a, b int64) bool {
-	if a == -1 {
-		return b != -1 // unlimited beats any finite cap; unlimited-vs-unlimited keeps order
-	}
-	if b == -1 {
-		return false
-	}
-	return a > b
-}
-
-// pickLRU favours the least-recently-used remote (never-used = oldest).
-func pickLRU(cands []upCand, led map[string]*ledgerRemote) int {
-	best, bestT := 0, lastUpload(led, cands[0].r)
-	for i := 1; i < len(cands); i++ {
-		if t := lastUpload(led, cands[i].r); t.Before(bestT) {
-			best, bestT = i, t
-		}
-	}
-	return best
-}
-
-func lastUpload(led map[string]*ledgerRemote, r uploaderRemote) time.Time {
-	if lr := led[remoteKey(r)]; lr != nil {
-		return lr.LastUpload
-	}
-	return time.Time{}
-}
-
-// pickBalance implements the capacity-balancing module (see balanceConfig):
-//  1. drop the previous remote (no two uploads in a row to the same one),
-//  2. normally pick the least-used (emptiest) account to level them up,
-//  3. every maxStreak picks, do one relief upload to the least-recently-used of the
-//     rest instead — which favours the fuller, neglected accounts — so request load
-//     spreads across every remote.
-//
-// It mutates st (streak/last) and returns the chosen index into cands.
-func pickBalance(cands []upCand, led map[string]*ledgerRemote, used map[string]int64, cfg balanceConfig, st *balanceState) int {
-	avail := make([]int, 0, len(cands))
-	for i := range cands {
-		if cfg.NoRepeat && len(cands) > 1 && cands[i].r.Name == st.last {
-			continue // never the same remote twice running (unless it's the only option)
-		}
-		avail = append(avail, i)
-	}
-	if len(avail) == 0 { // only the just-used remote is eligible → allow the repeat
-		for i := range cands {
-			avail = append(avail, i)
-		}
-	}
-	maxStreak := cfg.MaxStreak
-	var pick int
-	if maxStreak > 0 && st.streak >= maxStreak {
-		pick = leastRecent(avail, cands, led) // relief: give a fuller/neglected remote a turn
-		st.streak = 0
-	} else {
-		pick = leastUsed(avail, cands, used) // level up: emptiest account first
-		st.streak++
-	}
-	st.last = cands[pick].r.Name
-	return pick
-}
-
-func leastUsed(idxs []int, cands []upCand, used map[string]int64) int {
-	best := idxs[0]
-	for _, i := range idxs[1:] {
-		if used[cands[i].r.Name] < used[cands[best].r.Name] {
-			best = i
-		}
-	}
-	return best
-}
-
-func leastRecent(idxs []int, cands []upCand, led map[string]*ledgerRemote) int {
-	best, bestT := idxs[0], lastUpload(led, cands[idxs[0]].r)
-	for _, i := range idxs[1:] {
-		if t := lastUpload(led, cands[i].r); t.Before(bestT) {
-			best, bestT = i, t
-		}
-	}
-	return best
-}
-
-// selectRemote is the pure remote-picker: filter to eligible remotes, then dispatch
-// to the balancing module (if enabled) or the configured strategy. Returns the chosen
-// remote + remaining cap bytes (-1 = unlimited), or (nil, 0, reason) when none fit.
+// selectRemote is the pure remote-picker: filter to eligible remotes, then take the next
+// one the rotation sequence points at. Returns the chosen remote + remaining cap bytes
+// (-1 = unlimited), or (nil, 0, reason) when none fit.
 func selectRemote(remotes []uploaderRemote, led map[string]*ledgerRemote, pc pickCtx, now time.Time) (*uploaderRemote, int64, string) {
 	cands, reason := eligibleCands(remotes, led, now)
 	if len(cands) == 0 {
 		return nil, 0, reason
 	}
-	var idx int
-	switch {
-	case pc.balance.Enabled:
-		idx = pickBalance(cands, led, pc.used, pc.balance, pc.bstate)
-	case pc.strategy == "most_free":
-		idx = pickMostFree(cands)
-	case pc.strategy == "round_robin":
-		*pc.rr = (*pc.rr + 1) % len(cands)
-		idx = *pc.rr
-	default: // lru
-		idx = pickLRU(cands, led)
+	// Resume override: an interrupted remote is finished first (if it's eligible now),
+	// without advancing the sequence — so the rotation continues from where it stood once
+	// the partial is done.
+	if pc.resume != "" {
+		for i := range cands {
+			if cands[i].r.Name == pc.resume {
+				return &cands[i].r, cands[i].free, ""
+			}
+		}
+	}
+	idx := pickBySequence(cands, pc.seq, pc.cursor)
+	if idx < 0 {
+		return nil, 0, "no remote in the rotation sequence is eligible right now"
 	}
 	return &cands[idx].r, cands[idx].free, ""
 }
 
 // livePickCtx builds the picker context from the live config + package state.
-func livePickCtx(used map[string]int64) pickCtx {
-	return pickCtx{strategy: ucfg.Strategy, rr: &rrIndex, balance: normBalance(ucfg.Balance), bstate: &balState, used: used}
+func livePickCtx() pickCtx {
+	return pickCtx{seq: ucfg.Sequence, cursor: &seqCursor, resume: resumeRemote}
 }
 
-// normBalance fills in the default relief cap when balancing is on but unset.
-func normBalance(b balanceConfig) balanceConfig {
-	if b.Enabled && b.MaxStreak <= 0 {
-		b.MaxStreak = defaultMaxStreak
-	}
-	return b
-}
-
-// pickRemote chooses an eligible remote from the live config/ledger. used carries the
-// per-remote total-used bytes (only needed/fetched when balancing is enabled).
-func pickRemote(now time.Time, used map[string]int64) (*uploaderRemote, int64) {
-	r, free, _ := selectRemote(resolveRemotes(ucfg), ledger, livePickCtx(used), now)
+// pickRemote chooses an eligible remote from the live config/ledger.
+func pickRemote(now time.Time) (*uploaderRemote, int64) {
+	r, free, _ := selectRemote(resolveRemotes(ucfg), ledger, livePickCtx(), now)
 	return r, free
+}
+
+// selectedNames lists the configured destination remote names in order (deduped).
+func selectedNames(cfg uploaderConfig) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range cfg.Remotes {
+		if n := strings.TrimSpace(r.Name); n != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// normSequence keeps only sequence entries that are still selected remotes; an empty result
+// falls back to "even" (each selected remote once). This also migrates an old config that
+// has no sequence yet — it simply gets the even rotation over its selected remotes.
+func normSequence(cfg uploaderConfig) []string {
+	sel := selectedNames(cfg)
+	valid := map[string]bool{}
+	for _, n := range sel {
+		valid[n] = true
+	}
+	var seq []string
+	for _, n := range cfg.Sequence {
+		if valid[strings.TrimSpace(n)] {
+			seq = append(seq, strings.TrimSpace(n))
+		}
+	}
+	if len(seq) == 0 {
+		return sel
+	}
+	return seq
+}
+
+// wrrSequence expands per-remote weights into a smoothly interleaved sequence (the nginx
+// smooth weighted round-robin), deterministic and length = sum(weights), capped for sanity.
+func wrrSequence(order []string, weights map[string]int) []string {
+	wOf := func(n string) int {
+		if weights != nil {
+			if w, ok := weights[n]; ok && w >= 1 {
+				return w
+			}
+		}
+		return 1
+	}
+	total := 0
+	for _, n := range order {
+		total += wOf(n)
+	}
+	if len(order) == 0 || total == 0 {
+		return append([]string{}, order...)
+	}
+	if total > 100 { // keep the authored list manageable
+		total = 100
+	}
+	cw := make(map[string]int, len(order))
+	out := make([]string, 0, total)
+	for len(out) < total {
+		best := ""
+		for _, n := range order {
+			cw[n] += wOf(n)
+			if best == "" || cw[n] > cw[best] {
+				best = n
+			}
+		}
+		twTotal := 0
+		for _, n := range order {
+			twTotal += wOf(n)
+		}
+		cw[best] -= twTotal
+		out = append(out, best)
+	}
+	return out
+}
+
+// genByRank orders the selected remotes by a numeric key, then weights them N..1 by rank so
+// the first (emptiest / most-free) appears most often. asc=true ranks smallest-first.
+func genByRank(sel []string, key map[string]int64, asc bool) []string {
+	order := append([]string{}, sel...)
+	sort.SliceStable(order, func(i, j int) bool {
+		if asc {
+			return key[order[i]] < key[order[j]]
+		}
+		return key[order[i]] > key[order[j]]
+	})
+	weights := map[string]int{}
+	for i, n := range order {
+		weights[n] = len(order) - i
+	}
+	return wrrSequence(order, weights)
+}
+
+// generateSequence builds a rotation sequence for the given mode. Callers pass fill/free
+// only for the modes that need them.
+func generateSequence(cfg uploaderConfig, mode string, weights map[string]int, fill, free map[string]int64) []string {
+	sel := selectedNames(cfg)
+	switch mode {
+	case "weights":
+		return wrrSequence(sel, weights)
+	case "byfill":
+		return genByRank(sel, fill, true) // emptiest first
+	case "byfree":
+		return genByRank(sel, free, false) // most daily quota left first
+	default: // "even"
+		return wrrSequence(sel, nil)
+	}
+}
+
+// freeToday is each remote's remaining daily byte allowance (cap − used in the window),
+// unlimited caps reported as a large sentinel so they sort as "most free".
+func freeToday(cfg uploaderConfig, led map[string]*ledgerRemote, now time.Time) map[string]int64 {
+	out := map[string]int64{}
+	for _, r := range resolveRemotes(cfg) {
+		if r.Name == "" {
+			continue
+		}
+		f := remoteFree(r, led, now)
+		if f < 0 {
+			f = 1 << 62 // unlimited → most free
+		}
+		out[r.Name] = f
+	}
+	return out
+}
+
+// uploaderGenSequence returns a generated rotation sequence for the on-screen config, so
+// the UI's "Even / Weights / By fill / By free quota" buttons all resolve server-side.
+func uploaderGenSequence(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Mode    string         `json:"mode"`
+		Weights map[string]int `json:"weights"`
+		Config  uploaderConfig `json:"config"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+	cfg := body.Config
+	if len(cfg.Remotes) == 0 {
+		upMu.Lock()
+		ensureUploader()
+		cfg = ucfg
+		upMu.Unlock()
+	}
+	var fill, free map[string]int64
+	if body.Mode == "byfill" {
+		ctx, cancel := context.WithTimeout(req.Context(), 15*time.Second)
+		fill = balanceFill(ctx)
+		cancel()
+	}
+	if body.Mode == "byfree" {
+		upMu.Lock()
+		led := cloneLedger(ledger)
+		upMu.Unlock()
+		free = freeToday(cfg, led, time.Now())
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sequence": generateSequence(cfg, body.Mode, body.Weights, fill, free)})
 }
 
 // inWindow reports whether now falls in [from,until) (HH:MM); handles overnight
@@ -617,6 +767,54 @@ func hm(s string) int {
 	return h*60 + m
 }
 
+// uploaderOp is the rclone operation the uploader runs: move by default (source freed,
+// reappears via unionfs on the same path), or copy when explicitly configured.
+func uploaderOp(cfg uploaderConfig) string {
+	if cfg.Op == "copy" {
+		return "copy"
+	}
+	return "move"
+}
+
+// uploaderRemoteJob assembles the source items, destination, and layered transfer options
+// for one destination remote — the global opts plus per-remote bwlimit/tps and the
+// uploader's safety knobs (cutoff-mode, the remaining daily allowance as --max-transfer,
+// min-age, delete-empty). Pure, so both the real run and the command preview use it and
+// stay identical. free is the remaining daily byte allowance (0 = no cap this run).
+func uploaderRemoteJob(cfg uploaderConfig, r uploaderRemote, free int64) ([]transferItem, string, transferOpts) {
+	items := []transferItem{{Path: cfg.Source, IsDir: true, Contents: true}}
+	sub := r.Dest // per-remote subpath overrides the shared one
+	if sub == "" {
+		sub = cfg.Subpath
+	}
+	dst := r.Name + ":" + strings.TrimPrefix(sub, "/")
+	opts := cfg.Opts
+	if r.Bwlimit != "" {
+		opts.Bwlimit = r.Bwlimit
+	}
+	if r.Tpslimit != 0 {
+		opts.Tpslimit = r.Tpslimit
+	}
+	// Copy the slices so cfg.Opts isn't mutated.
+	opts.Exclude = append(append([]string{}, opts.Exclude...), cfg.Excludes...)
+	opts.Extra = append(append([]extraFlag{}, opts.Extra...), extraFlag{Flag: "--cutoff-mode", Value: "cautious"})
+	if free > 0 { // cap the run to the remaining daily allowance (whole files only)
+		// The value MUST carry the "B" suffix: rclone reads a bare number as KiB, which would
+		// make the cap 1024× too large — the remote would blow past its daily quota.
+		opts.Extra = append(opts.Extra, extraFlag{Flag: "--max-transfer", Value: strconv.FormatInt(free, 10) + "B"})
+	}
+	if cfg.MinAge != "" { // skip files still being written/downloaded
+		opts.Extra = append(opts.Extra, extraFlag{Flag: "--min-age", Value: cfg.MinAge})
+	}
+	if cfg.DeleteEmptySrc {
+		opts.Extra = append(opts.Extra, extraFlag{Flag: "--delete-empty-src-dirs", Value: ""})
+	}
+	if cfg.DryRun {
+		opts.Extra = append(opts.Extra, extraFlag{Flag: "--dry-run", Value: ""})
+	}
+	return items, dst, opts
+}
+
 func duBytes(path string) int64 {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -635,10 +833,17 @@ func duBytes(path string) int64 {
 var (
 	measureSource = duBytes
 
-	// uploadRunner performs the move and reports what moved + whether the run hit a
-	// provider rate-limit (FLOOD_WAIT/429), so the cycle can pause that remote.
-	uploadRunner = func(label, taskID, op string, items []transferItem, dst string, opts transferOpts) (int64, int, bool) {
+	// uploadRunner performs the move and reports what moved, whether the run hit a provider
+	// rate-limit (FLOOD_WAIT/429) so the cycle can pause that remote, and whether it was
+	// stopped by the user (→ the cycle resumes the same remote next time so teldrive's
+	// partial isn't wasted).
+	uploadRunner = func(label, taskID, op string, items []transferItem, dst string, opts transferOpts) (int64, int, bool, bool) {
 		j := jobs.Create(label, op)
+		for _, e := range opts.Extra { // so the Activity shows the capped target, not the whole-source total
+			if e.Flag == "--max-transfer" {
+				setJobCap(j.ID, int64(parseSize(e.Value))) // value carries a "B" suffix
+			}
+		}
 		runTransfer(j.ID, taskID, op, items, dst, false, opts)
 		var moved int64
 		var files int
@@ -647,23 +852,66 @@ var (
 			moved, files = s.Bytes, s.Transfers
 		}
 		statsMu.Unlock()
-		return moved, files, floodHit(j.ID)
+		return moved, files, floodHit(j.ID), jobs.Status(j.ID) == "stopped"
 	}
 )
 
+// resumeRemote names a remote whose upload was interrupted (user Stop) with a partial that
+// teldrive still holds; the next cycle re-picks it to finish before rotating on. Persisted
+// so a restart doesn't lose the resume target.
+var resumeRemote string
+
+const uploaderResumeRel = "cache/uploader_resume.json"
+
+func loadResume() { // caller holds upMu
+	var s struct {
+		Remote string `json:"remote"`
+	}
+	store.ReadJSON(uploaderResumeRel, &s)
+	resumeRemote = s.Remote
+}
+
+func setResume(name string) { // caller holds upMu
+	if resumeRemote == name {
+		return
+	}
+	resumeRemote = name
+	store.WriteJSON(uploaderResumeRel, map[string]string{"remote": name})
+}
+
 // uploaderCheck runs one cycle: measure the source, and if it's over threshold,
 // move it to the next eligible remote (blocking — uploads run one at a time).
-func uploaderCheck() {
+func uploaderCheck(manual bool) {
 	upMu.Lock()
 	ensureUploader()
 	cfg := ucfg
+	ledSnap := cloneLedger(ledger)
+	upLastMoved = 0 // reset; only a real upload below sets it
 	upMu.Unlock()
 
-	if !cfg.Enabled || cfg.Source == "" {
+	now := time.Now()
+	if cfg.Source == "" {
+		upMu.Lock()
+		upLastAt, upLastMsg = now, "no source folder set"
+		upMu.Unlock()
 		return
 	}
-	now := time.Now()
-	if !inWindow(cfg.AllowedFrom, cfg.AllowedUntil, now) {
+	// A manual run refreshes the detailed plan first (which remote gets what, where it
+	// stops, size per remote, ETA), then proceeds to upload below.
+	if manual {
+		pl := storeManualPlan(cfg, ledSnap, now)
+		upMu.Lock()
+		upLastSize, upLastAt, upLastMsg = pl.SourceBytes, time.Now(), planMsg(pl, cfg.Enabled)
+		upMu.Unlock()
+	}
+	// The enable toggle governs only the PERIODIC scheduler. "Run now" (manual) is an
+	// explicit request, so it uploads even while auto-upload is off.
+	if !cfg.Enabled && !manual {
+		return
+	}
+	// Window + threshold gate only the automatic scheduler. A manual Run now is an explicit
+	// "upload now" and bypasses both (same as the enable toggle above).
+	if !inWindow(cfg.AllowedFrom, cfg.AllowedUntil, now) && !manual {
 		upMu.Lock()
 		upLastAt, upLastMsg = now, "outside upload window"
 		upMu.Unlock()
@@ -672,62 +920,45 @@ func uploaderCheck() {
 	size := measureSource(cfg.Source)
 	thr := int64(parseSize(cfg.Threshold))
 
-	// Capacity-balancing ranks remotes by how full each account is — fetch that
-	// (cached rclone about) outside the lock so a cache miss doesn't stall the mutex.
-	var used map[string]int64
-	if cfg.Balance.Enabled {
-		uctx, ucancel := context.WithTimeout(context.Background(), 12*time.Second)
-		used = remoteUsedBytes(uctx)
-		ucancel()
-	}
-
 	upMu.Lock()
 	upLastSize, upLastAt = size, time.Now()
-	if thr > 0 && size < thr {
+	if thr > 0 && size < thr && !manual {
 		upLastMsg = "below threshold"
 		upMu.Unlock()
 		return
 	}
-	r, free := pickRemote(time.Now(), used)
+	cursorBefore := seqCursor
+	r, free := pickRemote(time.Now()) // advances seqCursor
 	if r == nil {
 		upLastMsg = "no eligible remote (caps/cooldowns)"
 		upMu.Unlock()
 		return
 	}
+	if cfg.DryRun {
+		seqCursor = cursorBefore // a dry-run must not disturb the real rotation position
+	}
 	upLastMsg = "uploading via " + r.Name
 	upMu.Unlock()
 
-	// Move the staging source up to this destination remote (Name:Dest), using the
-	// global transfer options + any per-remote bandwidth/tps override.
-	op := "move"
-	items := []transferItem{{Path: cfg.Source, IsDir: true}}
-	sub := r.Dest // per-remote subpath overrides the shared one
-	if sub == "" {
-		sub = cfg.Subpath
+	op := uploaderOp(cfg)
+	items, dst, opts := uploaderRemoteJob(cfg, *r, free) // includes --dry-run when cfg.DryRun
+
+	// Dry-run: run the real rclone --dry-run so the Activity log shows exactly what would
+	// move, but touch no state — no service pause, no ledger/history, no autoscan, and the
+	// cursor was already restored above.
+	if cfg.DryRun {
+		uploadRunner("uploader DRY-RUN: "+transferLabel(op, items, dst), r.TaskID, op, items, dst, opts)
+		upMu.Lock()
+		upLastAt, upLastMsg = time.Now(), "dry-run via "+r.Name+" — nothing moved (see Activity log)"
+		upMu.Unlock()
+		return
 	}
-	dst := r.Name + ":" + strings.TrimPrefix(sub, "/")
-	opts := cfg.Opts
-	if r.Bwlimit != "" {
-		opts.Bwlimit = r.Bwlimit
-	}
-	if r.Tpslimit != 0 {
-		opts.Tpslimit = r.Tpslimit
-	}
-	// Layer the uploader's safety knobs on top (copy the slices so cfg.Opts isn't mutated).
-	opts.Exclude = append(append([]string{}, opts.Exclude...), cfg.Excludes...)
-	opts.Extra = append(append([]extraFlag{}, opts.Extra...), extraFlag{Flag: "--cutoff-mode", Value: "cautious"})
-	if free > 0 { // cap the run to the remaining daily allowance (whole files only)
-		opts.Extra = append(opts.Extra, extraFlag{Flag: "--max-transfer", Value: strconv.FormatInt(free, 10)})
-	}
-	if cfg.MinAge != "" { // skip files still being written/downloaded
-		opts.Extra = append(opts.Extra, extraFlag{Flag: "--min-age", Value: cfg.MinAge})
-	}
-	if cfg.DeleteEmptySrc {
-		opts.Extra = append(opts.Extra, extraFlag{Flag: "--delete-empty-src-dirs", Value: ""})
-	}
+
 	// Slow down other services (qBittorrent, *arr imports) for the duration of the run.
 	applyUploadPause(cfg.Pause)
-	moved, files, flood := uploadRunner("uploader: "+transferLabel(op, items, dst), r.TaskID, op, items, dst, opts)
+	runStart := time.Now()
+	moved, files, flood, stopped := uploadRunner("uploader: "+transferLabel(op, items, dst), r.TaskID, op, items, dst, opts)
+	dur := time.Since(runStart)
 	restoreUploadPause(cfg.Pause)
 
 	// Post-upload: let the built-in autoscan pick up the moved paths (Plex-visible
@@ -745,13 +976,35 @@ func uploaderCheck() {
 	now = time.Now()
 	upMu.Lock()
 	recordUpload(remoteKey(*r), moved, files, now)
+	upLastMoved = moved // drives the loop's short cooldown → re-check + re-group promptly
+	if moved > 0 {      // log the real upload to the persistent history (past sequence)
+		recordHistory(r.Name, moved, files, dur, now)
+	}
+	// Resume bookkeeping: a user Stop leaves a partial teldrive holds, so remember this
+	// remote and finish it next cycle (the cursor already advanced at pick time, but the
+	// resume override re-picks this remote first). Any clean finish clears the resume.
+	switch {
+	case stopped:
+		setResume(r.Name)
+	case r.Name == resumeRemote:
+		setResume("") // this remote's resume is done
+	}
 	if flood { // rate-limited/banned — bench this remote so the next cycle picks another
 		pauseRemote(remoteKey(*r), now.Add(uploaderFloodPause))
 		upLastMsg = "rate-limited on " + r.Name + " — paused " + uploaderFloodPause.String() + " (moved " + humanBytes(moved) + ")"
+	} else if stopped {
+		upLastMsg = "stopped on " + r.Name + " after " + humanBytes(moved) + " — will resume there next run (teldrive keeps the partial)"
 	} else {
 		upLastMsg = "uploaded " + humanBytes(moved) + " / " + strconv.Itoa(files) + " files via " + r.Name
 	}
+	ledAfter := cloneLedger(ledger)
 	upMu.Unlock()
+
+	// A real upload just changed the state → recompute the dry-run plan so the UI's
+	// future sequence stays in sync with what actually happened.
+	if moved > 0 {
+		storeManualPlan(cfg, ledAfter, time.Now())
+	}
 }
 
 func startUploader() {
@@ -761,12 +1014,21 @@ func startUploader() {
 				upMu.Lock()
 				ensureUploader()
 				iv := ucfg.IntervalMinutes
+				moved := upLastMoved
 				upMu.Unlock()
 				if iv <= 0 {
 					iv = 15
 				}
-				time.Sleep(time.Duration(iv) * time.Minute)
-				uploaderCheck()
+				// After a remote actually uploaded, wait only a short cooldown, then re-check:
+				// the source has changed (rclone picks its own files, not our planned grouping),
+				// so we re-measure + re-group + rotate to the next remote with a fresh list.
+				// When nothing moved (below threshold / all capped), fall back to the interval.
+				wait := time.Duration(iv) * time.Minute
+				if moved > 0 {
+					wait = uploaderCooldown
+				}
+				time.Sleep(wait)
+				uploaderCheck(false) // periodic — respects the enable toggle
 			}
 		}()
 	})
@@ -794,13 +1056,11 @@ func putUploader(w http.ResponseWriter, req *http.Request) {
 	if c.IntervalMinutes <= 0 {
 		c.IntervalMinutes = 15
 	}
-	if c.Strategy == "" {
-		c.Strategy = "lru"
-	}
+	c.Sequence = normSequence(c)
 	upMu.Lock()
 	ensureUploader()
 	ucfg = c
-	balState = balanceState{} // fresh streak/last after a config change
+	seqCursor = 0 // restart the rotation cursor after a config change
 	store.WriteJSON(uploaderCfgRel, ucfg)
 	upMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -863,8 +1123,10 @@ func uploaderStatus(w http.ResponseWriter, _ *http.Request) {
 	upMu.Lock()
 	ensureUploader()
 	now := time.Now()
+	// resolveRemotes so a remote inheriting the shared cap/files shows the effective value,
+	// not a bare "∞".
 	remotes := make([]map[string]any, 0, len(ucfg.Remotes))
-	for _, r := range ucfg.Remotes {
+	for _, r := range resolveRemotes(ucfg) {
 		key := remoteKey(r)
 		used := usedInWindow(ledger, key, now)
 		var last, paused any
@@ -882,10 +1144,13 @@ func uploaderStatus(w http.ResponseWriter, _ *http.Request) {
 			"last_upload": last, "paused_until": paused,
 		})
 	}
+	balNext := projectRotation(ucfg, ledger, seqCursor, 24, resumeRemote)
 	resp := map[string]any{
 		"enabled": ucfg.Enabled, "source": ucfg.Source, "threshold": ucfg.Threshold,
 		"last_size": humanBytes(upLastSize), "last_size_bytes": upLastSize,
-		"last_check": nil, "message": upLastMsg, "remotes": remotes,
+		"last_check": nil, "message": upLastMsg, "remotes": remotes, "plan": upLastPlan,
+		"checking": upChecking, "history": recentHistory(30), "balance_next": balNext,
+		"resume": resumeRemote, // a remote to finish (interrupted upload) before rotating on
 	}
 	if !upLastAt.IsZero() {
 		resp["last_check"] = upLastAt.UTC().Format(time.RFC3339)
@@ -894,9 +1159,81 @@ func uploaderStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// uploaderRun executes one upload cycle right now ("Run now") — the real move (or the
+// rclone --dry-run when dry-run mode is on), regardless of the check interval. Still honours
+// the enable toggle, window, threshold and caps.
 func uploaderRun(w http.ResponseWriter, _ *http.Request) {
-	go uploaderCheck()
+	// Not gated by upChecking: a real run can take hours, and its progress is already shown
+	// by the live Activity job + the live Upload plan. Gating it here would leave "Planning…"
+	// spinning for the whole upload.
+	go uploaderCheck(true)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// uploaderPlan builds the dry-run PLAN only ("Check now") — it measures the source and
+// projects the rotation, but never uploads. This is the safe preview; use Run now to
+// actually move (or dry-run) files.
+func uploaderPlan(w http.ResponseWriter, _ *http.Request) {
+	upMu.Lock()
+	upChecking = true
+	ensureUploader()
+	cfg := ucfg
+	ledSnap := cloneLedger(ledger)
+	upMu.Unlock()
+	go func() {
+		now := time.Now()
+		if cfg.Source == "" {
+			upMu.Lock()
+			upLastAt, upLastMsg, upChecking = now, "no source folder set", false
+			upMu.Unlock()
+			return
+		}
+		pl := storeManualPlan(cfg, ledSnap, now)
+		upMu.Lock()
+		upLastSize, upLastAt, upLastMsg, upChecking = pl.SourceBytes, time.Now(), planMsg(pl, cfg.Enabled), false
+		upMu.Unlock()
+	}()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// resetCaps clears the rolling-window usage for one remote (or all, when name is empty):
+// the upload events that count against the daily byte/file cap, the flood bench, and the
+// last-upload stamp that drives the gap cooldown. The lifetime Uploaded tally is kept —
+// it's the balancer's fill proxy, not a daily quota.
+//
+// Returns the remotes it touched. Caller must NOT hold upMu.
+func resetCaps(name string) []string {
+	upMu.Lock()
+	defer upMu.Unlock()
+	ensureUploader()
+	cleared := []string{}
+	for key, lr := range ledger {
+		if lr == nil || (name != "" && key != name) {
+			continue
+		}
+		lr.Events = nil
+		lr.PausedUntil = time.Time{}
+		lr.LastUpload = time.Time{}
+		cleared = append(cleared, key)
+	}
+	sort.Strings(cleared)
+	store.WriteJSON(uploaderLedgerRel, ledger)
+	return cleared
+}
+
+// POST /api/uploader/caps/reset — zero today's usage so the rotation starts clean.
+// Body: {"remote":"name"} to reset one, or {} / omitted for every remote.
+func uploaderResetCaps(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Remote string `json:"remote"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // empty body = reset all
+	cleared := resetCaps(strings.TrimSpace(body.Remote))
+	upMu.Lock()
+	upLastMsg = "daily caps reset (" + strconv.Itoa(len(cleared)) + " remote(s))"
+	upLastAt = time.Now()
+	upMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "cleared": cleared})
 }
 
 // nextWindowOpen returns the next time the upload window opens at/after now (now
@@ -955,6 +1292,13 @@ func nextEligible(remotes []uploaderRemote, led map[string]*ledgerRemote, now ti
 				if ft := oldest.Add(uploaderWindow); ft.After(t) {
 					t = ft
 				}
+			}
+		}
+		// per-remote gap cooldown — a remote that just uploaded can't be reused until
+		// GapMin elapses (so a gap-only backlog still advances instead of stalling).
+		if r.GapMin > 0 {
+			if gt := lr.LastUpload.Add(time.Duration(r.GapMin) * time.Minute); gt.After(t) {
+				t = gt
 			}
 		}
 		consider(t)
@@ -1074,19 +1418,9 @@ func uploaderSimulate(w http.ResponseWriter, req *http.Request) {
 
 	remotes := resolveRemotes(cfg) // apply shared subpath/cap/files/gap defaults
 	led := map[string]*ledgerRemote{}
-	rr := 0
-	// Balancing sim: seed each remote's account fill from the live `rclone about`, then
-	// grow it as the simulated uploads land, so the picker ranks them realistically.
-	var bstate balanceState
-	simUsed := map[string]int64{}
-	if cfg.Balance.Enabled {
-		uctx, ucancel := context.WithTimeout(context.Background(), 12*time.Second)
-		for k, v := range remoteUsedBytes(uctx) {
-			simUsed[k] = v
-		}
-		ucancel()
-	}
-	pc := pickCtx{strategy: cfg.Strategy, rr: &rr, balance: normBalance(cfg.Balance), bstate: &bstate, used: simUsed}
+	simUsed := map[string]int64{} // per-remote fill, grown as sim uploads land (for display)
+	cur := 0
+	pc := pickCtx{seq: cfg.Sequence, cursor: &cur}
 	start := nextWindowOpen(cfg.AllowedFrom, cfg.AllowedUntil, time.Now())
 	now := start
 	remaining := total

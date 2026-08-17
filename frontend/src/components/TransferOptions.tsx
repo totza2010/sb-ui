@@ -10,13 +10,19 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { cn } from '@/lib/cn'
 import { Zap, Plus, X } from 'lucide-react'
 
-export function TransferOptions({ opts, setOpts, remoteTypes, op }: {
+// A caller-supplied checkbox rendered alongside the built-in flags (e.g. the Uploader's
+// "delete emptied source folders", which is a move flag but not part of TransferOpts).
+export interface ExtraCheck { label: string; hint: string; v: boolean; on: (b: boolean) => void }
+
+export function TransferOptions({ opts, setOpts, remoteTypes, op, extraChecks }: {
   opts: TransferOpts
   setOpts: (updater: (o: TransferOpts) => TransferOpts) => void
   remoteTypes: string[]
   op?: string
+  extraChecks?: ExtraCheck[]
 }) {
   const { data: providers } = useRcloneProviders()
   const { available, catalog } = useMemo(() => {
@@ -41,23 +47,26 @@ export function TransferOptions({ opts, setOpts, remoteTypes, op }: {
           <Button size="sm" variant="outline" className="h-7" onClick={() => setOpts((o) => ({ ...o, tpslimit: 8, transfers: 4, checkers: 4 }))}>Apply recommended</Button>
         </div>
       )}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
         <NumField label="Transfers" v={opts.transfers} on={(n) => setOpt('transfers', n)} ph="4 (default)" />
         <NumField label="Checkers" v={opts.checkers} on={(n) => setOpt('checkers', n)} ph="8 (default)" />
         <NumField label="tps limit" v={opts.tpslimit} on={(n) => setOpt('tpslimit', n)} ph="off" />
         <NumField label="Retries" v={opts.retries} on={(n) => setOpt('retries', n)} ph="3 (default)" />
-        <div className="space-y-1 col-span-2 sm:col-span-1">
+        <div className="space-y-1">
           <Label className="text-[11px]">Bandwidth</Label>
           <Input className="h-8" value={opts.bwlimit ?? ''} onChange={(e) => setOpt('bwlimit', e.target.value)} placeholder="unlimited" />
         </div>
       </div>
       <p className="text-[11px] text-muted-foreground">Blank = rclone defaults: transfers <span className="font-mono">4</span>, checkers <span className="font-mono">8</span>, retries <span className="font-mono">3</span>, tps <span className="font-mono">off</span>, bandwidth <span className="font-mono">unlimited</span>.</p>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-        <Chk label="Skip existing (--ignore-existing)" v={!!opts.ignore_existing} on={(b) => setOpt('ignore_existing', b)} />
-        <Chk label="Skip newer on dest (--update)" v={!!opts.update} on={(b) => setOpt('update', b)} />
-        <Chk label="Create empty src dirs" v={!!opts.create_empty_src_dirs} on={(b) => setOpt('create_empty_src_dirs', b)} />
-        <Chk label="No traverse (small→large)" v={!!opts.no_traverse} on={(b) => setOpt('no_traverse', b)} />
-        <Chk label="Fast list (--fast-list)" v={!!opts.fast_list} on={(b) => setOpt('fast_list', b)} />
+      <div className="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+        <Chk label="Skip existing" flag="--ignore-existing" hint="Never re-upload a file that already exists at the destination, even if it changed. Fastest for append-only libraries." v={!!opts.ignore_existing} on={(b) => setOpt('ignore_existing', b)} />
+        <Chk label="Skip newer on dest" flag="--update" hint="Don't overwrite a destination file that's newer than the source — protects edits already made on the remote." v={!!opts.update} on={(b) => setOpt('update', b)} />
+        <Chk label="Create empty src dirs" flag="--create-empty-src-dirs" hint="Recreate empty directories from the source on the destination, so the folder structure matches even where there are no files." v={!!opts.create_empty_src_dirs} on={(b) => setOpt('create_empty_src_dirs', b)} />
+        <Chk label="No traverse" flag="--no-traverse" hint="Don't list the whole destination first; look up only the files being sent. Much faster when adding a few files to a large remote." v={!!opts.no_traverse} on={(b) => setOpt('no_traverse', b)} />
+        <Chk label="Fast list" flag="--fast-list" hint="Fetch the remote's listing in one bulk call (fewer API requests, more memory). Helps on remotes that support it; teldrive does not." v={!!opts.fast_list} on={(b) => setOpt('fast_list', b)} />
+        {extraChecks?.map((c) => (
+          <Chk key={c.label} label={c.label} hint={c.hint} v={c.v} on={c.on} />
+        ))}
       </div>
       <div className="space-y-1">
         <Label className="text-[11px]">Compare method</Label>
@@ -142,10 +151,17 @@ function NumField({ label, v, on, ph }: { label: string; v?: number; on: (n: num
   )
 }
 
-function Chk({ label, v, on }: { label: string; v: boolean; on: (b: boolean) => void }) {
+function Chk({ label, flag, hint, v, on }: { label: string; flag?: string; hint: string; v: boolean; on: (b: boolean) => void }) {
   return (
-    <label className="flex items-center gap-2 text-xs text-muted-foreground">
-      <input type="checkbox" checked={v} onChange={(e) => on(e.target.checked)} />{label}
+    <label className={cn('flex cursor-pointer gap-2 rounded-md border p-2 transition-colors', v ? 'border-primary/40 bg-primary/5' : 'border-border hover:bg-accent/30')}>
+      <input type="checkbox" className="mt-0.5 shrink-0" checked={v} onChange={(e) => on(e.target.checked)} />
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-baseline gap-1.5">
+          <span className="text-xs font-medium text-foreground">{label}</span>
+          {flag && <span className="font-mono text-[10px] text-muted-foreground">{flag}</span>}
+        </span>
+        <span className="mt-0.5 block text-[10px] leading-snug text-muted-foreground">{hint}</span>
+      </span>
     </label>
   )
 }

@@ -97,6 +97,10 @@ func rcloneMkdir(w http.ResponseWriter, req *http.Request) {
 type transferItem struct {
 	Path  string `json:"path"`   // remote:path or /local/path
 	IsDir bool   `json:"is_dir"` // dirs get their name appended to dest (rclone merges contents otherwise)
+	// Contents moves the directory's contents straight into dst (SRC=Path, no name-append
+	// filter). This is what the uploader wants — the source folder maps 1:1 onto the
+	// destination path — as opposed to the Transfers page, which preserves each item's name.
+	Contents bool `json:"contents,omitempty"`
 }
 
 // transferOpts mirrors the common rclone transfer flags (whitelisted — we never
@@ -384,6 +388,68 @@ func stopTransfer(w http.ResponseWriter, req *http.Request) {
 
 // runTransfer executes a transfer (one job, items sequentially), streaming output
 // into the job log and live stats. Shared by immediate runs, tasks, and the queue.
+// transferArgv builds the exact rclone command(s) a transfer will run — one per parent
+// group of the selected items. Kept pure (no side effects) so both the runner and the
+// command preview share it and can never drift. Selected items are grouped by parent and
+// scoped with --filter rules (like RcloneBrowser) so each keeps its name under the dest.
+func transferArgv(conf, op string, items []transferItem, dst string, dryRun bool, opts transferOpts) [][]string {
+	flags := transferFlags(op, opts, dryRun)
+	base := []string{"--use-json-log", "--stats", "1s", "--stats-file-name-length", "0", "-v"}
+	// A single "contents" item (the uploader) moves the source directory's contents straight
+	// into dst — no parent grouping, no name-appending filters, so /mnt/local/Media maps onto
+	// remote:Media rather than remote:Media/Media.
+	if len(items) == 1 && items[0].Contents {
+		args := []string{"rclone", "--config", conf, op, items[0].Path, dst}
+		args = append(args, base...)
+		args = append(args, flags...)
+		return [][]string{args}
+	}
+	order := []string{}
+	groups := map[string][]string{}
+	for _, it := range items {
+		p := endpointParent(it.Path)
+		if _, ok := groups[p]; !ok {
+			order = append(order, p)
+		}
+		groups[p] = append(groups[p], endpointBase(it.Path))
+	}
+	out := make([][]string, 0, len(order))
+	for _, parent := range order {
+		args := []string{"rclone", "--config", conf, op, parent, dst}
+		args = append(args, base...)
+		args = append(args, flags...)
+		for _, n := range groups[parent] {
+			args = append(args, "--filter", "+ /"+n, "--filter", "+ /"+n+"/**")
+		}
+		args = append(args, "--filter", "- *")
+		out = append(out, args)
+	}
+	return out
+}
+
+// rclone exit codes that are not failures for us. rclone documents 8 as "transfer
+// exceeded — limit set by --max-transfer reached" and 9 as "operation successful, but no
+// files transferred". The uploader deliberately sets --max-transfer to each remote's
+// remaining daily cap, so 8 is its normal stop condition.
+const (
+	rcExitMaxTransfer = 8
+	rcExitNoTransfer  = 9
+)
+
+// classifyExit maps an rclone exit code to what it means for the job: whether it failed,
+// and whether it stopped because --max-transfer (the uploader's daily cap) was reached.
+// Pure, so the rule is testable without running rclone.
+func classifyExit(code int) (failed, capped bool) {
+	switch code {
+	case 0, rcExitNoTransfer:
+		return false, false
+	case rcExitMaxTransfer:
+		return false, true
+	default:
+		return true, false
+	}
+}
+
 func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dryRun bool, opts transferOpts) {
 	jobs.SetStatus(jobID, "running")
 	startedAt := time.Now().UTC().Format(time.RFC3339)
@@ -400,35 +466,12 @@ func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dry
 		cancelMu.Unlock()
 	}()
 	conf := rcloneConfPath()
-	flags := transferFlags(op, opts, dryRun)
-	base := []string{"--use-json-log", "--stats", "1s", "--stats-file-name-length", "0", "-v"}
-
-	// Group selected items by their parent, then run ONE rclone command per group
-	// with --filter rules (like RcloneBrowser): rclone transfers the group in
-	// parallel and preserves each item's name under the destination. Different
-	// parents/remotes become separate sequential commands.
-	order := []string{}
-	groups := map[string][]string{}
-	for _, it := range items {
-		p := endpointParent(it.Path)
-		if _, ok := groups[p]; !ok {
-			order = append(order, p)
-		}
-		groups[p] = append(groups[p], endpointBase(it.Path))
-	}
 
 	failed := false
-	for _, parent := range order {
+	for _, args := range transferArgv(conf, op, items, dst, dryRun, opts) {
 		if ctx.Err() != nil {
 			break
 		}
-		args := []string{"rclone", "--config", conf, op, parent, dst}
-		args = append(args, base...)
-		args = append(args, flags...)
-		for _, n := range groups[parent] {
-			args = append(args, "--filter", "+ /"+n, "--filter", "+ /"+n+"/**")
-		}
-		args = append(args, "--filter", "- *")
 		jobs.PushLog(jobID, "$ "+strings.Join(args, " "))
 		code, err := streamTransfer(ctx, jobID, args)
 		if err != nil {
@@ -436,7 +479,17 @@ func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dry
 			failed = true
 			break
 		}
-		if code != 0 {
+		bad, capped := classifyExit(code)
+		if capped {
+			// The uploader sets --max-transfer to the remote's remaining daily cap, so this
+			// is the DESIGNED stop, not an error: rclone stopped at a file boundary
+			// (--cutoff-mode cautious) with the cap spent. Marking it "failed" made every
+			// capped upload look broken. Stop the remaining batches — the allowance is
+			// gone — and let the caller rotate to the next remote.
+			jobs.PushLog(jobID, "\nReached the --max-transfer limit (this remote's daily cap) — stopped cleanly at a file boundary. This is the expected end of a capped run, not a failure; the rotation continues on the next remote.")
+			break
+		}
+		if bad {
 			failed = true
 			break
 		}
@@ -483,9 +536,21 @@ type transferStats struct {
 var (
 	statsMu    sync.Mutex
 	statsStore = map[string]*transferStats{}
-	startStore = map[string]string{} // jobID -> started RFC3339 (for live jobs)
-	floodStore = map[string]bool{}   // jobID -> hit a rate-limit/flood error (kept across stats updates)
+	startStore = map[string]string{}  // jobID -> started RFC3339 (for live jobs)
+	floodStore = map[string]bool{}    // jobID -> hit a rate-limit/flood error (kept across stats updates)
+	capStore   = map[string]int64{}   // jobID -> --max-transfer cap, so the UI shows the capped target not rclone's whole-source total
 )
+
+// setJobCap records a job's --max-transfer limit so the progress UI can show the real
+// capped target (e.g. 497.5G) instead of rclone's candidate total (the whole source).
+func setJobCap(id string, cap int64) {
+	if cap <= 0 {
+		return
+	}
+	statsMu.Lock()
+	capStore[id] = cap
+	statsMu.Unlock()
+}
 
 func setStats(id string, s *transferStats) { statsMu.Lock(); statsStore[id] = s; statsMu.Unlock() }
 
@@ -555,6 +620,7 @@ func saveSummary(jobID, started, finished string) {
 // statsResp embeds the live/finished stats plus timing.
 type statsResp struct {
 	*transferStats
+	Cap        int64  `json:"cap,omitempty"` // --max-transfer limit; the effective target when < totalBytes
 	StartedAt  string `json:"started_at,omitempty"`
 	FinishedAt string `json:"finished_at,omitempty"`
 }
@@ -564,9 +630,10 @@ func transferStatsHandler(w http.ResponseWriter, req *http.Request) {
 	statsMu.Lock()
 	live := statsStore[id]
 	started := startStore[id]
+	cap := capStore[id]
 	statsMu.Unlock()
 	if live != nil {
-		writeJSON(w, http.StatusOK, statsResp{transferStats: live, StartedAt: started})
+		writeJSON(w, http.StatusOK, statsResp{transferStats: live, Cap: cap, StartedAt: started})
 		return
 	}
 	sumMu.Lock()
@@ -574,7 +641,7 @@ func transferStatsHandler(w http.ResponseWriter, req *http.Request) {
 	sum := summaries[id]
 	sumMu.Unlock()
 	if sum != nil {
-		writeJSON(w, http.StatusOK, statsResp{transferStats: sum.Stats, StartedAt: sum.StartedAt, FinishedAt: sum.FinishedAt})
+		writeJSON(w, http.StatusOK, statsResp{transferStats: sum.Stats, Cap: cap, StartedAt: sum.StartedAt, FinishedAt: sum.FinishedAt})
 		return
 	}
 	// Fallback: reconstruct from the job log's final rclone stats block (covers
@@ -595,7 +662,9 @@ func transferStatsHandler(w http.ResponseWriter, req *http.Request) {
 
 // ── parse rclone's final text stats block from a job log (fallback) ───────────
 
-var sizeRE = regexp.MustCompile(`([0-9.]+)\s*([KMGTP]i?)?B?`)
+// Case-insensitive so user-typed sizes like "100k" / "50m" parse as intended
+// (rclone accepts both cases too) instead of silently dropping the unit.
+var sizeRE = regexp.MustCompile(`(?i)([0-9.]+)\s*([KMGTP]i?)?B?`)
 
 func parseSize(s string) float64 {
 	m := sizeRE.FindStringSubmatch(strings.TrimSpace(s))
@@ -603,7 +672,7 @@ func parseSize(s string) float64 {
 		return 0
 	}
 	v, _ := strconv.ParseFloat(m[1], 64)
-	switch strings.TrimSuffix(m[2], "i") {
+	switch strings.TrimSuffix(strings.ToUpper(m[2]), "I") {
 	case "K":
 		v *= 1 << 10
 	case "M":

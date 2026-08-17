@@ -203,9 +203,13 @@ func Mount(r chi.Router) {
 	r.Get("/api/uploader", getUploader)
 	r.Put("/api/uploader", putUploader)
 	r.Get("/api/uploader/status", uploaderStatus)
-	r.Post("/api/uploader/run", uploaderRun)
+	r.Post("/api/uploader/run", uploaderRun)   // execute one cycle now (real / dry-run)
+	r.Post("/api/uploader/plan", uploaderPlan) // build the dry-run plan only (no upload)
+	r.Post("/api/uploader/caps/reset", uploaderResetCaps) // zero today's usage (all remotes, or one)
 	r.Post("/api/uploader/test-block", uploaderTestBlock)
 	r.Post("/api/uploader/simulate", uploaderSimulate)
+	r.Post("/api/uploader/selftest", uploaderSelfTestHandler)      // read-only diagnostics; ?group= narrows it
+	r.Post("/api/uploader/sequence/generate", uploaderGenSequence) // even/weights/byfill/byfree → sequence
 	r.Get("/api/uploader/calibration", uploaderCalibration)
 	startUploader()
 	startAuditWatcher()

@@ -638,7 +638,7 @@ export interface TransferOpts {
 }
 
 export interface FileStat { name: string; size: number; bytes: number; percentage: number; speed: number; speedAvg: number; eta: number }
-export interface TransferStats { bytes: number; totalBytes: number; speed: number; eta: number; transfers: number; totalTransfers: number; checks: number; totalChecks: number; elapsedTime: number; errors: number; transferring?: FileStat[]; started_at?: string; finished_at?: string }
+export interface TransferStats { bytes: number; totalBytes: number; cap?: number; speed: number; eta: number; transfers: number; totalTransfers: number; checks: number; totalChecks: number; elapsedTime: number; errors: number; transferring?: FileStat[]; started_at?: string; finished_at?: string }
 export const useTransferStats = (id: string | null, live: boolean) =>
   useQuery<TransferStats>({
     queryKey: ['transfer-stats', id],
@@ -995,13 +995,22 @@ export interface BalanceConfig { enabled: boolean; max_streak: number; no_repeat
 export interface QbitConfig { enabled: boolean; action: 'pause' | 'throttle'; dl_kbps: number; up_kbps: number }
 export interface PauseConfig { arr_disable: boolean; plex_kill_transcode: boolean; autoscan_hold: boolean; qbit: QbitConfig }
 export interface UploaderConfig {
-  enabled: boolean; source: string; subpath?: string; cap?: string; cap_files?: number; gap_min?: number; threshold: string; strategy: 'lru' | 'round_robin' | 'most_free'; balance?: BalanceConfig; pause?: PauseConfig; interval_minutes: number
-  allowed_from?: string; allowed_until?: string; min_age?: string; delete_empty_src?: boolean; opts?: TransferOpts; excludes?: string[]
+  enabled: boolean; source: string; subpath?: string; cap?: string; cap_files?: number; gap_min?: number; threshold: string; op?: 'copy' | 'move'; dry_run?: boolean; sequence?: string[]; strategy: 'lru' | 'round_robin' | 'most_free'; balance?: BalanceConfig; pause?: PauseConfig; interval_minutes: number
+  allowed_from?: string; allowed_until?: string; min_age?: string; eta_speed?: string; delete_empty_src?: boolean; opts?: TransferOpts; excludes?: string[]
   remotes: UploaderRemote[]
 }
+export interface UploadPlanRemote { remote: string; dest: string; bytes: number; human: string; files: number; stop_file: string; eta_sec: number; at_sec: number; round: number; capped: boolean; fill_human: string; cmd?: string }
+export interface UploadPlan {
+  at: string; source_bytes: number; source_human: string; files_total: number
+  threshold_human: string; meets_threshold: boolean
+  remotes: UploadPlanRemote[]; leftover_bytes: number; leftover_human: string; leftover_why?: string
+  transfer_sec: number; total_eta_sec: number
+}
+export interface UploadHistEntry { at: string; remote: string; bytes: number; files: number; gap_sec: number; dur_sec: number }
 export interface UploaderStatus {
   enabled: boolean; source: string; threshold: string; last_size: string; last_size_bytes: number
-  last_check: string | null; message: string
+  last_check: string | null; message: string; plan?: UploadPlan | null; checking?: boolean
+  history?: UploadHistEntry[]; balance_next?: string[] | null; resume?: string
   remotes: { name: string; task_id?: string; cap: string; used_today: string; used_bytes: number; cap_files?: number; files_today?: number; last_upload: string | null; paused_until?: string | null }[]
 }
 export const useUploader = () =>
@@ -1009,9 +1018,35 @@ export const useUploader = () =>
 export const useSaveUploader = () =>
   useMutation<{ ok: boolean }, Error, UploaderConfig>({ mutationFn: (c) => request('/uploader', { method: 'PUT', body: JSON.stringify(c) }) })
 export const useUploaderStatus = () =>
-  useQuery<UploaderStatus>({ queryKey: ['uploader-status'], queryFn: () => request('/uploader/status'), refetchInterval: 5000 })
+  useQuery<UploaderStatus>({ queryKey: ['uploader-status'], queryFn: () => request('/uploader/status'), refetchInterval: (q) => (q.state.data?.checking ? 1200 : 5000) })
+// Run now: execute one upload cycle (real move, or --dry-run when dry-run mode is on).
 export const useUploaderRun = () =>
   useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/uploader/run', { method: 'POST' }) })
+// Reset today's cap usage so the rotation starts clean. Omit `remote` to reset every one.
+export const useResetCaps = () =>
+  useMutation<{ ok: boolean; cleared: string[] }, Error, { remote?: string } | void>({
+    mutationFn: (v) => request('/uploader/caps/reset', { method: 'POST', body: JSON.stringify(v || {}) }),
+  })
+// Check now: build the dry-run plan only — measures the source, projects the rotation, uploads nothing.
+export const useUploaderPlan = () =>
+  useMutation<{ ok: boolean }, Error, void>({ mutationFn: () => request('/uploader/plan', { method: 'POST' }) })
+
+// Self-test — read-only diagnostics. Passing the on-screen config verifies unsaved edits;
+// group narrows it to one section ('config' | 'destinations' | 'pause').
+export interface StCheck { group: string; name: string; status: 'ok' | 'warn' | 'fail' | 'skip'; detail: string }
+export interface CmdPreview { remote: string; cmd: string }
+export interface SelfTestResult { checks: StCheck[]; commands?: CmdPreview[]; ran_at: string; ok: number; warn: number; fail: number }
+export const useUploaderSelfTest = () =>
+  useMutation<SelfTestResult, Error, { group?: string; config?: UploaderConfig }>({
+    mutationFn: ({ group, config }) => request(`/uploader/selftest${group ? `?group=${group}` : ''}`, { method: 'POST', body: JSON.stringify(config ?? {}) }),
+  })
+
+// Generate a rotation sequence server-side. mode: even | weights | byfill | byfree.
+// weights is remote→weight (mode 'weights'); config carries the on-screen selection.
+export const useGenerateSequence = () =>
+  useMutation<{ sequence: string[] }, Error, { mode: string; weights?: Record<string, number>; config: UploaderConfig }>({
+    mutationFn: (b) => request('/uploader/sequence/generate', { method: 'POST', body: JSON.stringify(b) }),
+  })
 export interface BlockReport { action: string; qbit: string; arr: string; plex: string; autoscan: string }
 export const useUploaderTestBlock = () =>
   useMutation<BlockReport, Error, { action: 'apply' | 'restore'; pause?: PauseConfig }>({ mutationFn: (b) => request('/uploader/test-block', { method: 'POST', body: JSON.stringify(b) }) })

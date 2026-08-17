@@ -46,19 +46,17 @@ func uploadSim(t *testing.T, cfg uploaderConfig, srcSize, perBytes int64, perFil
 	executor.Set(memExec{})
 
 	upMu.Lock()
-	if cfg.Strategy == "" {
-		cfg.Strategy = "lru"
-	}
+	cfg.Sequence = normSequence(cfg)
 	ucfg = cfg
 	ledger = map[string]*ledgerRemote{}
 	upLoaded = true
 	upLastMsg = ""
-	rrIndex = 0
+	seqCursor = 0
 	upMu.Unlock()
 
 	calls := &[]run{}
 	measureSource = func(string) int64 { return srcSize }
-	uploadRunner = func(_, _, _ string, _ []transferItem, dst string, opts transferOpts) (int64, int, bool) {
+	uploadRunner = func(_, _, _ string, _ []transferItem, dst string, opts transferOpts) (int64, int, bool, bool) {
 		name := dst
 		for i := 0; i < len(dst); i++ {
 			if dst[i] == ':' {
@@ -73,7 +71,7 @@ func uploadSim(t *testing.T, cfg uploaderConfig, srcSize, perBytes int64, perFil
 			}
 		}
 		*calls = append(*calls, run{remote: name, maxTransfer: mt})
-		return perBytes, perFiles, name == floodOn
+		return perBytes, perFiles, name == floodOn, false
 	}
 	return calls
 }
@@ -86,19 +84,19 @@ func remoteSeq(calls []run) []string {
 	return out
 }
 
-// 1. Round-robin must cycle strictly across remotes.
+// 1. The rotation sequence must cycle strictly in order (even sequence over all remotes).
 func TestUploaderRoundRobinRotation(t *testing.T) {
 	cfg := uploaderConfig{
-		Enabled: true, Source: "/src", Threshold: "1G", Strategy: "round_robin",
-		Remotes: []uploaderRemote{{Name: "A"}, {Name: "B"}, {Name: "C"}},
+		Enabled: true, Source: "/src", Threshold: "1G",
+		Sequence: []string{"A", "B", "C"},
+		Remotes:  []uploaderRemote{{Name: "A"}, {Name: "B"}, {Name: "C"}},
 	}
 	calls := uploadSim(t, cfg, 10*gb, gb, 1, "")
 	for i := 0; i < 6; i++ {
-		uploaderCheck()
+		uploaderCheck(false)
 	}
 	got := remoteSeq(*calls)
-	// rrIndex increments before pick, so the first pick is B (index 1).
-	want := []string{"B", "C", "A", "B", "C", "A"}
+	want := []string{"A", "B", "C", "A", "B", "C"}
 	if len(got) != 6 {
 		t.Fatalf("expected 6 uploads, got %d (%v)", len(got), got)
 	}
@@ -117,7 +115,7 @@ func TestUploaderLRUSpreads(t *testing.T) {
 	}
 	calls := uploadSim(t, cfg, 10*gb, gb, 1, "")
 	for i := 0; i < 3; i++ {
-		uploaderCheck()
+		uploaderCheck(false)
 		time.Sleep(2 * time.Millisecond) // distinct LastUpload timestamps
 	}
 	seen := map[string]bool{}
@@ -138,7 +136,7 @@ func TestUploaderFileCapPerDay(t *testing.T) {
 	// each run moves 5 files → 2 runs reach the cap, the 3rd must be skipped.
 	calls := uploadSim(t, cfg, 100*gb, gb, 5, "")
 	for i := 0; i < 3; i++ {
-		uploaderCheck()
+		uploaderCheck(false)
 	}
 	if n := len(*calls); n != 2 {
 		t.Fatalf("file cap: expected 2 uploads before cap, got %d (%v)", n, remoteSeq(*calls))
@@ -159,17 +157,18 @@ func TestUploaderByteCapCutoff(t *testing.T) {
 	}
 	calls := uploadSim(t, cfg, 500*gb, 60*gb, 3, "") // moves 60G per run
 	for i := 0; i < 3; i++ {
-		uploaderCheck()
+		uploaderCheck(false)
 	}
 	if n := len(*calls); n != 2 {
 		t.Fatalf("byte cap: expected 2 uploads before cap, got %d", n)
 	}
-	// 1st run: full 100G remaining; 2nd run: 40G remaining (100−60).
-	if (*calls)[0].maxTransfer != strconv.FormatInt(100*gb, 10) {
-		t.Fatalf("1st --max-transfer = %s, want %d", (*calls)[0].maxTransfer, 100*gb)
+	// 1st run: full 100G remaining; 2nd run: 40G remaining (100−60). The value MUST carry
+	// the "B" suffix so rclone reads bytes, not KiB.
+	if (*calls)[0].maxTransfer != strconv.FormatInt(100*gb, 10)+"B" {
+		t.Fatalf("1st --max-transfer = %s, want %dB", (*calls)[0].maxTransfer, 100*gb)
 	}
-	if (*calls)[1].maxTransfer != strconv.FormatInt(40*gb, 10) {
-		t.Fatalf("2nd --max-transfer = %s, want %d", (*calls)[1].maxTransfer, 40*gb)
+	if (*calls)[1].maxTransfer != strconv.FormatInt(40*gb, 10)+"B" {
+		t.Fatalf("2nd --max-transfer = %s, want %dB", (*calls)[1].maxTransfer, 40*gb)
 	}
 }
 
@@ -180,8 +179,8 @@ func TestUploaderFloodPauseAndDivert(t *testing.T) {
 		Remotes: []uploaderRemote{{Name: "A"}, {Name: "B"}},
 	}
 	calls := uploadSim(t, cfg, 10*gb, gb, 1, "A") // A floods every time
-	uploaderCheck()                               // picks A → floods → paused
-	uploaderCheck()                               // A benched → must pick B
+	uploaderCheck(false)                          // picks A → floods → paused
+	uploaderCheck(false)                          // A benched → must pick B
 
 	got := remoteSeq(*calls)
 	if len(got) != 2 || got[0] != "A" || got[1] != "B" {
@@ -206,7 +205,7 @@ func TestUploaderWindowGate(t *testing.T) {
 		Remotes: []uploaderRemote{{Name: "A"}},
 	}
 	calls := uploadSim(t, cfg, 10*gb, gb, 1, "")
-	uploaderCheck()
+	uploaderCheck(false)
 	if len(*calls) != 0 {
 		t.Fatalf("expected no upload outside window, got %v", remoteSeq(*calls))
 	}
@@ -250,49 +249,9 @@ func TestUploaderBelowThreshold(t *testing.T) {
 		Remotes: []uploaderRemote{{Name: "A"}},
 	}
 	calls := uploadSim(t, cfg, 10*gb, gb, 1, "") // 10G < 500G
-	uploaderCheck()
+	uploaderCheck(false)
 	if len(*calls) != 0 {
 		t.Fatalf("expected no upload below threshold, got %v", remoteSeq(*calls))
-	}
-}
-
-// 8. Capacity-balancing: least-used first, never the same remote twice in a row, and
-// periodic relief uploads that reach the fuller accounts.
-func TestUploaderBalance(t *testing.T) {
-	remotes := []uploaderRemote{{Name: "A"}, {Name: "B"}, {Name: "C"}, {Name: "D"}}
-	used := map[string]int64{"A": 20, "B": 33, "C": 137, "D": 199} // A/B emptiest
-	led := map[string]*ledgerRemote{}
-	rr := 0
-	var bstate balanceState
-	pc := pickCtx{balance: balanceConfig{Enabled: true, MaxStreak: 3, NoRepeat: true}, bstate: &bstate, used: used, rr: &rr}
-
-	now := time.Now()
-	var seq []string
-	for i := 0; i < 16; i++ {
-		r, _, reason := selectRemote(remotes, led, pc, now)
-		if r == nil {
-			t.Fatalf("no remote picked: %s", reason)
-		}
-		seq = append(seq, r.Name)
-		used[r.Name] += 10
-		ledgerAdd(led, remoteKey(*r), 10, 1, now)
-		now = now.Add(time.Minute)
-	}
-
-	for i := 1; i < len(seq); i++ {
-		if seq[i] == seq[i-1] {
-			t.Fatalf("consecutive repeat at cycle %d: %v", i, seq)
-		}
-	}
-	counts := map[string]int{}
-	for _, s := range seq {
-		counts[s]++
-	}
-	if counts["C"] == 0 || counts["D"] == 0 {
-		t.Fatalf("relief never reached the fuller accounts C/D: %v (%v)", counts, seq)
-	}
-	if counts["A"] < counts["C"] || counts["A"] < counts["D"] {
-		t.Fatalf("emptiest account A should dominate: %v (%v)", counts, seq)
 	}
 }
 
@@ -318,11 +277,11 @@ func TestUploaderBlockOrchestration(t *testing.T) {
 		Pause:   pauseConfig{ArrDisable: true, Qbit: qbitConfig{Enabled: true}},
 	}
 	uploadSim(t, cfg, 10*gb, gb, 1, "")
-	uploadRunner = func(_, _, _ string, _ []transferItem, _ string, _ transferOpts) (int64, int, bool) {
+	uploadRunner = func(_, _, _ string, _ []transferItem, _ string, _ transferOpts) (int64, int, bool, bool) {
 		seq = append(seq, "upload")
-		return gb, 1, false
+		return gb, 1, false, false
 	}
-	uploaderCheck()
+	uploaderCheck(false)
 
 	want := []string{"qbit:pause", "arr:off", "upload", "qbit:resume", "arr:on"}
 	if len(seq) != len(want) {
@@ -350,7 +309,7 @@ func TestUploaderBlockDisabled(t *testing.T) {
 		Pause:   pauseConfig{},
 	}
 	uploadSim(t, cfg, 10*gb, gb, 1, "")
-	uploaderCheck()
+	uploaderCheck(false)
 	if touched {
 		t.Fatalf("block actions ran while every toggle was off")
 	}
@@ -376,7 +335,7 @@ func TestUploaderBlockRestoresOnFlood(t *testing.T) {
 		Pause:   pauseConfig{ArrDisable: true, Qbit: qbitConfig{Enabled: true}},
 	}
 	uploadSim(t, cfg, 10*gb, gb, 1, "A")
-	uploaderCheck()
+	uploaderCheck(false)
 	if len(seq) != 2 || seq[0] != "qbit:resume" || seq[1] != "arr:on" {
 		t.Fatalf("restore did not run after flood: %v", seq)
 	}
@@ -453,21 +412,6 @@ func TestLedgerWindowing(t *testing.T) {
 	}
 }
 
-func TestSelectMostFree(t *testing.T) {
-	now := time.Now()
-	led := map[string]*ledgerRemote{}
-	ledgerAdd(led, "A", 600*gb, 0, now) // A cap 700 → 100G free
-	ledgerAdd(led, "B", 100*gb, 0, now) // B cap 700 → 600G free
-	remotes := []uploaderRemote{{Name: "A", CapPerDay: "700"}, {Name: "B", CapPerDay: "700"}, {Name: "C"}}
-	rr := 0
-	if r, _, _ := selectRemote(remotes, led, pickCtx{strategy: "most_free", rr: &rr}, now); r == nil || r.Name != "C" {
-		t.Fatalf("most_free should pick the unlimited remote C, got %v", r)
-	}
-	if r2, free, _ := selectRemote(remotes[:2], led, pickCtx{strategy: "most_free", rr: &rr}, now); r2 == nil || r2.Name != "B" || free != 600*gb {
-		t.Fatalf("most_free = %v (free %d), want B with 600G free", r2, free)
-	}
-}
-
 func TestEligibleCands(t *testing.T) {
 	now := time.Date(2026, 1, 2, 12, 0, 0, 0, time.UTC)
 	led := map[string]*ledgerRemote{}
@@ -490,7 +434,7 @@ func TestEligibleCands(t *testing.T) {
 		}
 		t.Fatalf("eligibleCands = %v, want only [E]", names)
 	}
-	if r, _, reason := selectRemote(remotes, led, pickCtx{strategy: "lru", rr: new(int)}, now); r == nil || r.Name != "E" {
+	if r, _, reason := selectRemote(remotes, led, pickCtx{cursor: new(int)}, now); r == nil || r.Name != "E" {
 		t.Fatalf("selectRemote = %v (%s), want E", r, reason)
 	}
 }
@@ -590,5 +534,119 @@ func TestSimulatorDrainWithCaps(t *testing.T) {
 	}
 	if len(out.Steps) == 0 || out.Steps[0].Kind != "move" || out.Steps[0].Files != 140 {
 		t.Errorf("first move should be cap-bounded to 140 files (700G/5G), got %+v", out.Steps)
+	}
+}
+
+// Dry-run still runs the (real) rclone command so the log shows what would move, but must
+// carry --dry-run and touch no state: no ledger recording, no cursor advance.
+func TestUploaderDryRunTouchesNothing(t *testing.T) {
+	cfg := uploaderConfig{
+		Enabled: true, Source: "/src", Threshold: "1G", DryRun: true,
+		Sequence: []string{"A", "B"},
+		Remotes:  []uploaderRemote{{Name: "A"}, {Name: "B"}},
+	}
+	calls := uploadSim(t, cfg, 10*gb, gb, 1, "")
+	for i := 0; i < 3; i++ {
+		uploaderCheck(false)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("dry-run should still run the command each check, got %d", len(*calls))
+	}
+	upMu.Lock()
+	defer upMu.Unlock()
+	if ledger["A"] != nil || ledger["B"] != nil {
+		t.Errorf("dry-run must not record to the ledger: %+v", ledger)
+	}
+	if seqCursor != 0 {
+		t.Errorf("dry-run must not advance the rotation cursor, got %d", seqCursor)
+	}
+	// The command itself must carry --dry-run.
+	_, _, opts := uploaderRemoteJob(cfg, uploaderRemote{Name: "A"}, 0)
+	found := false
+	for _, e := range opts.Extra {
+		if e.Flag == "--dry-run" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("uploaderRemoteJob should add --dry-run when cfg.DryRun")
+	}
+}
+
+// The enable toggle governs only the periodic scheduler. A manual "Run now" (uploaderCheck
+// with manual=true) must upload even while auto-upload is disabled.
+func TestUploaderRunNowUploadsWhileDisabled(t *testing.T) {
+	cfg := uploaderConfig{
+		Enabled: false, Source: "/src", Threshold: "1G",
+		Sequence: []string{"A"}, Remotes: []uploaderRemote{{Name: "A"}},
+	}
+	calls := uploadSim(t, cfg, 10*gb, gb, 1, "")
+
+	uploaderCheck(false) // periodic while disabled → must do nothing
+	if len(*calls) != 0 {
+		t.Fatalf("periodic check while disabled uploaded %d (want 0)", len(*calls))
+	}
+	uploaderCheck(true) // Run now → uploads despite being disabled
+	if len(*calls) != 1 {
+		t.Fatalf("manual Run now while disabled uploaded %d (want 1)", len(*calls))
+	}
+}
+
+// A user Stop must not advance the rotation: the same remote is re-picked next cycle to
+// finish its partial (which teldrive keeps), and a clean finish then rotates on.
+func TestUploaderResumesStoppedRemote(t *testing.T) {
+	cfg := uploaderConfig{
+		Enabled: true, Source: "/src", Threshold: "1G",
+		Sequence: []string{"A", "B"}, Remotes: []uploaderRemote{{Name: "A"}, {Name: "B"}},
+	}
+	calls := uploadSim(t, cfg, 100*gb, gb, 1, "")
+	upMu.Lock()
+	setResume("") // start clean
+	upMu.Unlock()
+
+	// First run picks A (seq[0]) and gets STOPPED mid-way.
+	stopNext := true
+	uploadRunner = func(_, _, _ string, _ []transferItem, dst string, _ transferOpts) (int64, int, bool, bool) {
+		name := dst[:strings.IndexByte(dst, ':')]
+		*calls = append(*calls, run{remote: name})
+		s := stopNext
+		stopNext = false // only the first run stops
+		return gb, 1, false, s
+	}
+	uploaderCheck(false) // A → stopped
+	uploaderCheck(false) // must RESUME A (not advance to B)
+	uploaderCheck(false) // A finished cleanly → now rotate to B
+
+	got := remoteSeq(*calls)
+	if len(got) != 3 || got[0] != "A" || got[1] != "A" || got[2] != "B" {
+		t.Fatalf("resume order = %v, want [A A B]", got)
+	}
+	upMu.Lock()
+	rr := resumeRemote
+	upMu.Unlock()
+	if rr != "" {
+		t.Errorf("resume should be cleared after A finished, still %q", rr)
+	}
+}
+
+// The size threshold and off-peak window gate only the automatic scheduler. A manual
+// "Run now" (manual=true) must upload even when below threshold and outside the window.
+func TestUploaderManualBypassesThresholdAndWindow(t *testing.T) {
+	now := time.Now()
+	// A window that's currently closed, and a threshold well above the source.
+	cfg := uploaderConfig{
+		Enabled: true, Source: "/src", Threshold: "500G",
+		AllowedFrom: now.Add(2 * time.Hour).Format("15:04"), AllowedUntil: now.Add(3 * time.Hour).Format("15:04"),
+		Sequence: []string{"A"}, Remotes: []uploaderRemote{{Name: "A"}},
+	}
+	calls := uploadSim(t, cfg, 10*gb, gb, 1, "") // 10G << 500G threshold, outside window
+
+	uploaderCheck(false) // periodic → blocked (window/threshold)
+	if len(*calls) != 0 {
+		t.Fatalf("periodic below threshold / outside window uploaded %d (want 0)", len(*calls))
+	}
+	uploaderCheck(true) // Run now → uploads regardless
+	if len(*calls) != 1 {
+		t.Fatalf("manual Run now should upload despite threshold+window, got %d", len(*calls))
 	}
 }

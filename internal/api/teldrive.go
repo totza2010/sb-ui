@@ -96,6 +96,40 @@ type tdResult struct {
 
 // teldriveStorage aggregates per-category storage across ALL teldrive remotes —
 // the enhancement teldrive's own web UI can't do (it shows one account at a time).
+// teldriveUsedBytes returns each teldrive remote's total used bytes (sum of category
+// sizes) — the real per-account fill for the uploader's capacity balancer, since rclone
+// `about` can't report usage for teldrive backends. Best-effort, parallel.
+func teldriveUsedBytes(ctx context.Context) map[string]int64 {
+	out := map[string]int64{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, r := range teldriveRemotes() {
+		wg.Add(1)
+		go func(r tdRemote) {
+			defer wg.Done()
+			rc, body := r.get(ctx, "/api/files/categories")
+			if rc != 0 {
+				return
+			}
+			var cats []struct {
+				TotalSize int64 `json:"totalSize"`
+			}
+			if json.Unmarshal([]byte(body), &cats) != nil {
+				return
+			}
+			var sum int64
+			for _, c := range cats {
+				sum += c.TotalSize
+			}
+			mu.Lock()
+			out[r.Name] = sum
+			mu.Unlock()
+		}(r)
+	}
+	wg.Wait()
+	return out
+}
+
 func teldriveStorage(w http.ResponseWriter, _ *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
