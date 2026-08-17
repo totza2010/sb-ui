@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig, createLogger } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -44,5 +45,19 @@ export default defineConfig({
       '/api': { target: 'http://localhost:9180', changeOrigin: true, configure: onProxyError },
       '/ws': { target: 'ws://localhost:9180', ws: true, changeOrigin: true },
     },
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./vitest.setup.ts'],
+    css: false,
+    restoreMocks: true,
+    include: ['src/**/*.test.{ts,tsx}'],
+    // @cubone ships raw src as its node entry (broken extensionless imports); swap it
+    // for a stub so importing pages that transitively pull it stays resolvable.
+    alias: [
+      { find: /^@cubone\/react-file-manager$/, replacement: path.resolve(__dirname, './src/test/stubs/cubone.tsx') },
+      { find: /@cubone\/react-file-manager\/dist\/style\.css$/, replacement: path.resolve(__dirname, './src/test/stubs/empty.css') },
+    ],
   },
 })
