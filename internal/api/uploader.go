@@ -25,13 +25,13 @@ import (
 // Name:Dest, governed by this remote's daily caps + gap. (One source → many
 // destinations is the whole point; the destinations are plain rclone remotes.)
 type uploaderRemote struct {
-	Name      string `json:"name"`             // rclone remote name (ledger key + label)
-	Dest      string `json:"dest"`             // path within the remote ("" = root)
-	CapPerDay string `json:"cap"`              // bytes/24h, "" = unlimited (gdrive 750G); teldrive often blank
-	CapFiles  int    `json:"cap_files"`        // files/24h, 0 = unlimited (teldrive rate/ban dimension)
-	GapMin    int    `json:"gap_min"`          // min minutes between uses of this remote
-	Bwlimit   string `json:"bwlimit"`          // bandwidth, e.g. "40M"
-	Tpslimit  int    `json:"tpslimit"`         // teldrive ban-avoidance
+	Name      string `json:"name"`              // rclone remote name (ledger key + label)
+	Dest      string `json:"dest"`              // path within the remote ("" = root)
+	CapPerDay string `json:"cap"`               // bytes/24h, "" = unlimited (gdrive 750G); teldrive often blank
+	CapFiles  int    `json:"cap_files"`         // files/24h, 0 = unlimited (teldrive rate/ban dimension)
+	GapMin    int    `json:"gap_min"`           // min minutes between uses of this remote
+	Bwlimit   string `json:"bwlimit"`           // bandwidth, e.g. "40M"
+	Tpslimit  int    `json:"tpslimit"`          // teldrive ban-avoidance
 	TaskID    string `json:"task_id,omitempty"` // LEGACY: old task-mode entries, migrated to raw on load
 }
 
@@ -105,11 +105,11 @@ type pauseConfig struct {
 
 type uploaderConfig struct {
 	Enabled         bool             `json:"enabled"`
-	Source          string           `json:"source"`   // local staging path, e.g. /mnt/local/Media
-	Subpath         string           `json:"subpath"`  // shared path within each destination remote (per-remote Dest overrides)
-	CapPerDay       string           `json:"cap"`      // shared daily byte cap (per-remote CapPerDay overrides)
-	CapFiles        int              `json:"cap_files"` // shared daily file cap (per-remote CapFiles overrides)
-	GapMin          int              `json:"gap_min"`  // shared min minutes between reuses (per-remote GapMin overrides)
+	Source          string           `json:"source"`           // local staging path, e.g. /mnt/local/Media
+	Subpath         string           `json:"subpath"`          // shared path within each destination remote (per-remote Dest overrides)
+	CapPerDay       string           `json:"cap"`              // shared daily byte cap (per-remote CapPerDay overrides)
+	CapFiles        int              `json:"cap_files"`        // shared daily file cap (per-remote CapFiles overrides)
+	GapMin          int              `json:"gap_min"`          // shared min minutes between reuses (per-remote GapMin overrides)
 	Threshold       string           `json:"threshold"`        // upload once source ≥ this size (e.g. "500G")
 	Strategy        string           `json:"strategy"`         // lru | round_robin | most_free
 	Balance         balanceConfig    `json:"balance"`          // capacity-balancing module (overrides Strategy when enabled)
@@ -291,13 +291,13 @@ func migrateTaskRemotes() {
 // Injectable seams for the block actions, so tests can assert the orchestration
 // (what runs, in what order) without touching a real qBittorrent / *arr.
 var (
-	qbitPauseFn    = qbitPause
-	qbitResumeFn   = qbitResume
+	qbitPauseFn      = qbitPause
+	qbitResumeFn     = qbitResume
 	arrImportsFn     = arrSetImportsEnabled
 	plexKillFn       = startPlexTranscodeKill
 	plexUnkillFn     = stopPlexTranscodeKill
-	autoscanHoldFn   = autoscanHold                  // external autoscan container (docker pause)
-	autoscanPauseFn  = func() { autoscanSvc().Pause() }  // built-in autoscan hold
+	autoscanHoldFn   = autoscanHold                     // external autoscan container (docker pause)
+	autoscanPauseFn  = func() { autoscanSvc().Pause() } // built-in autoscan hold
 	autoscanResumeFn = func() { autoscanSvc().Resume() }
 )
 
@@ -617,6 +617,16 @@ func hm(s string) int {
 	return h*60 + m
 }
 
+// maxTransferValue renders a byte allowance as an rclone --max-transfer value.
+//
+// The "B" suffix is mandatory. rclone reads a bare number as KiB, which silently makes the
+// cap 1024× larger than intended — that is how one run pushed roughly a terabyte past a
+// 500 G daily cap and got the remote rate-limited. Every caller must go through here rather
+// than formatting the number itself.
+func maxTransferValue(bytes int64) string {
+	return strconv.FormatInt(bytes, 10) + "B"
+}
+
 func duBytes(path string) int64 {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -717,7 +727,7 @@ func uploaderCheck() {
 	opts.Exclude = append(append([]string{}, opts.Exclude...), cfg.Excludes...)
 	opts.Extra = append(append([]extraFlag{}, opts.Extra...), extraFlag{Flag: "--cutoff-mode", Value: "cautious"})
 	if free > 0 { // cap the run to the remaining daily allowance (whole files only)
-		opts.Extra = append(opts.Extra, extraFlag{Flag: "--max-transfer", Value: strconv.FormatInt(free, 10)})
+		opts.Extra = append(opts.Extra, extraFlag{Flag: "--max-transfer", Value: maxTransferValue(free)})
 	}
 	if cfg.MinAge != "" { // skip files still being written/downloaded
 		opts.Extra = append(opts.Extra, extraFlag{Flag: "--min-age", Value: cfg.MinAge})

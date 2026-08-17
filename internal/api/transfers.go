@@ -384,6 +384,29 @@ func stopTransfer(w http.ResponseWriter, req *http.Request) {
 
 // runTransfer executes a transfer (one job, items sequentially), streaming output
 // into the job log and live stats. Shared by immediate runs, tasks, and the queue.
+// rclone exit codes that are not failures for us. rclone documents 8 as "transfer
+// exceeded — limit set by --max-transfer reached" and 9 as "operation successful, but no
+// files transferred". The uploader deliberately sets --max-transfer to each remote's
+// remaining daily cap, so 8 is its normal stop condition.
+const (
+	rcExitMaxTransfer = 8
+	rcExitNoTransfer  = 9
+)
+
+// classifyExit maps an rclone exit code to what it means for the job: whether it failed,
+// and whether it stopped because --max-transfer (the daily cap) was reached. Pure, so the
+// rule is testable without running rclone.
+func classifyExit(code int) (failed, capped bool) {
+	switch code {
+	case 0, rcExitNoTransfer:
+		return false, false
+	case rcExitMaxTransfer:
+		return false, true
+	default:
+		return true, false
+	}
+}
+
 func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dryRun bool, opts transferOpts) {
 	jobs.SetStatus(jobID, "running")
 	startedAt := time.Now().UTC().Format(time.RFC3339)
@@ -436,7 +459,17 @@ func runTransfer(jobID, taskID, op string, items []transferItem, dst string, dry
 			failed = true
 			break
 		}
-		if code != 0 {
+		bad, capped := classifyExit(code)
+		if capped {
+			// The uploader passes each remote's remaining daily allowance as --max-transfer, so
+			// this is the designed end of a capped run, not an error: rclone stopped at a whole-file
+			// boundary (--cutoff-mode cautious) with the allowance spent. Reporting it as "failed"
+			// made every correct capped upload look broken. The allowance is gone, so stop here and
+			// let the caller rotate to the next remote.
+			jobs.PushLog(jobID, "\nReached the --max-transfer limit (this remote's daily cap) — stopped cleanly at a file boundary. This is the expected end of a capped run, not a failure; the rotation continues on the next remote.")
+			break
+		}
+		if bad {
 			failed = true
 			break
 		}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -164,12 +163,14 @@ func TestUploaderByteCapCutoff(t *testing.T) {
 	if n := len(*calls); n != 2 {
 		t.Fatalf("byte cap: expected 2 uploads before cap, got %d", n)
 	}
-	// 1st run: full 100G remaining; 2nd run: 40G remaining (100−60).
-	if (*calls)[0].maxTransfer != strconv.FormatInt(100*gb, 10) {
-		t.Fatalf("1st --max-transfer = %s, want %d", (*calls)[0].maxTransfer, 100*gb)
+	// 1st run: full 100G remaining; 2nd run: 40G remaining (100−60). The value carries the
+	// "B" suffix — this assertion previously expected the bare number, which is exactly the
+	// form rclone reads as KiB, so the test was locking in a cap 1024x too large.
+	if want := maxTransferValue(100 * gb); (*calls)[0].maxTransfer != want {
+		t.Fatalf("1st --max-transfer = %s, want %s", (*calls)[0].maxTransfer, want)
 	}
-	if (*calls)[1].maxTransfer != strconv.FormatInt(40*gb, 10) {
-		t.Fatalf("2nd --max-transfer = %s, want %d", (*calls)[1].maxTransfer, 40*gb)
+	if want := maxTransferValue(40 * gb); (*calls)[1].maxTransfer != want {
+		t.Fatalf("2nd --max-transfer = %s, want %s", (*calls)[1].maxTransfer, want)
 	}
 }
 
