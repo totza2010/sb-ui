@@ -477,7 +477,7 @@ func (s *autoscanService) fire(key string) {
 	s.mu.Unlock()
 
 	s.setStatus(id, scanScanning, secName, "", true) // store the library name for display
-	switch err := autoscanScanFn(cfg, secID, key); {  // secID (key) drives the actual scan
+	switch err := autoscanScanFn(cfg, secID, key); { // secID (key) drives the actual scan
 	case err != nil:
 		s.setStatus(id, scanFailed, "", err.Error(), false)
 	case ac.WaitCompletion:

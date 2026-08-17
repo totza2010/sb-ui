@@ -113,15 +113,16 @@ func Mount(r chi.Router) {
 	r.Get("/api/arr/files", arrFiles)
 	r.Post("/api/arr/command", arrCommand)
 	r.Post("/api/arr/plex-refresh", arrPlexRefresh)
+	r.Get("/api/arr/reconcile", reconcileHandler) // ?fix=1 also queues scans for moved titles
 
 	// Built-in autoscan (docs/autoscan-plan.md)
 	r.Post("/api/autoscan/trigger", autoscanTrigger)
 	r.Post("/api/autoscan/webhook/{token}", autoscanWebhook)
 	r.Post("/api/autoscan/webhook", autoscanWebhook) // token via X-API-Key header / ?apikey= / Basic Auth
 	r.Get("/api/autoscan/status", autoscanStatusHandler)
-	r.Post("/api/autoscan/connections/check", autoscanConnCheck) // active arr-API health probe
+	r.Post("/api/autoscan/connections/check", autoscanConnCheck)  // active arr-API health probe
 	r.Post("/api/autoscan/connections/manual", autoscanManualAdd) // register an arr sb-ui can't discover
-	r.Post("/api/autoscan/connections/wire", autoscanWire)       // set + test the webhook via arr API
+	r.Post("/api/autoscan/connections/wire", autoscanWire)        // set + test the webhook via arr API
 	r.Post("/api/autoscan/clear", autoscanClear)
 	r.Delete("/api/autoscan/scans/{id}", autoscanDeleteScan)
 	r.Post("/api/autoscan/pause", autoscanPause)

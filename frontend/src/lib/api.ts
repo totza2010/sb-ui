@@ -698,8 +698,11 @@ export const useProxySetDash = () =>
   useMutation<{ ok: boolean }, Error, ManagedPayload>({ mutationFn: (b) => request('/proxy/dash', { method: 'PUT', body: JSON.stringify(b) }) })
 // Unified *arr library (Sonarr/Radarr across instances)
 export interface ArrCopy { instance: string; item_id: number; profile: string; files: number; size: number; has_file: boolean; in_plex: boolean; folder?: string }
+// full:true scans the whole matching library. A library Plex has never scanned stays
+// empty no matter how many targeted path refreshes it accepts, so bootstrapping needs
+// this once; afterwards targeted scans work.
 export const useArrPlexRefresh = () =>
-  useMutation<{ ok: boolean }, Error, { path: string }>({ mutationFn: (b) => request('/arr/plex-refresh', { method: 'POST', body: JSON.stringify(b) }) })
+  useMutation<{ ok: boolean }, Error, { path: string; full?: boolean }>({ mutationFn: (b) => request('/arr/plex-refresh', { method: 'POST', body: JSON.stringify(b) }) })
 export interface ArrItem {
   kind: string; key: string; title: string; year: number
   poster: string; overview: string; status: string; network: string
@@ -720,13 +723,15 @@ export interface PlexLibInfo { title: string; type: string; count: number; locat
 export interface IntegrationGroup { key: string; label: string; library: string; used: boolean; configured: boolean; note?: string; instances: ConnStatus[]; libraries?: PlexLibInfo[] }
 export const useIntegrations = () =>
   useQuery<{ groups: IntegrationGroup[] }>({ queryKey: ['integrations'], queryFn: () => request('/integrations') })
-export const arrFilesQueryOpts = (kind: string, instance: string, id: number, ext = '') => ({
+export const arrFilesQueryOpts = (kind: string, instance: string, id: number, ext = '', refresh = false) => ({
   queryKey: ['arr-files', kind, instance, id],
-  queryFn: () => request<{ files: ArrFile[] }>(`/arr/files?kind=${kind}&instance=${encodeURIComponent(instance)}&id=${id}&ext=${encodeURIComponent(ext)}`),
+  // refresh=1 bypasses the server's file + Plex-id caches; without it a re-check right
+  // after a scan just returns the same stale answer the user is trying to get past.
+  queryFn: () => request<{ files: ArrFile[] }>(`/arr/files?kind=${kind}&instance=${encodeURIComponent(instance)}&id=${id}&ext=${encodeURIComponent(ext)}${refresh ? '&refresh=1' : ''}`),
   staleTime: 60000,
 })
-export const useArrFiles = (kind: string, instance: string, id: number, enabled: boolean, ext = '') =>
-  useQuery<{ files: ArrFile[] }>({ ...arrFilesQueryOpts(kind, instance, id, ext), enabled })
+export const useArrFiles = (kind: string, instance: string, id: number, enabled: boolean, ext = '', refresh = false) =>
+  useQuery<{ files: ArrFile[] }>({ ...arrFilesQueryOpts(kind, instance, id, ext, refresh), enabled })
 export const useArrCommand = () =>
   useMutation<{ ok: boolean }, Error, ArrCommand>({
     mutationFn: (b) => request('/arr/command', { method: 'POST', body: JSON.stringify(b) }),
@@ -854,6 +859,20 @@ export const useAutoscanPause = () =>
   useMutation<{ ok: boolean; paused: boolean }, Error, boolean>({ mutationFn: (pause) => request(`/autoscan/${pause ? 'pause' : 'resume'}`, { method: 'POST' }) })
 export const useAutoscanConnCheck = () =>
   useMutation<{ ok: boolean; connections: ConnLink[] }, Error, void>({ mutationFn: () => request('/autoscan/connections/check', { method: 'POST' }) })
+
+// arr ↔ Plex reconcile: compares by PATH, so a title moved to another root shows up as a
+// stale Plex path paired with the arr path Plex has never seen.
+export interface RecItem { kind: string; instance: string; item_id: number; title: string; folder: string; has_file: boolean; ext_id: string }
+export interface RecMove { title: string; kind: string; instance: string; item_id: number; ext_id: string; from: string; to: string }
+export interface RecMissingRoot { kind: string; instance: string; root: string; count: number; section: string; covered: boolean; sec_count: number; sec_nested: boolean; items: RecItem[] }
+export interface RecMismatch { plex_title: string; path: string; expected: string; actual: string; arr: { title: string; instance: string } }
+export interface RecPlexEntry { title: string; path: string; section: string }
+export interface ReconcileResult {
+  compared: number; moves: RecMove[]; mismatches: RecMismatch[]
+  missing_arr: number; missing_roots: RecMissingRoot[]; missing_srv: RecPlexEntry[]; queued: number
+}
+export const useReconcile = () =>
+  useMutation<ReconcileResult, Error, boolean>({ mutationFn: (fix) => request(`/arr/reconcile${fix ? '?fix=1' : ''}`) })
 export interface ManualArr { source: string; name: string; url: string; api_key: string }
 export const useAutoscanManualAdd = () =>
   useMutation<{ ok: boolean }, Error, ManualArr>({ mutationFn: (a) => request('/autoscan/connections/manual', { method: 'POST', body: JSON.stringify(a) }) })

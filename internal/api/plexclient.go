@@ -239,11 +239,24 @@ func plexSectionScanning(cfg plexConfig, sectionKey string) bool {
 // plexSectionForPath returns the section whose root location is the longest prefix
 // of the given (Plex-side) path.
 func plexSectionForPath(cfg plexConfig, p string) (key, title string, ok bool) {
+	return sectionForPathIn(plexSections(cfg), p)
+}
+
+// sectionForPathIn is the pure matcher (testable without a Plex server).
+func sectionForPathIn(secs []plexSection, p string) (key, title string, ok bool) {
+	// The prefix must end at a path boundary. Without that check a library rooted at
+	// /Media/TV also claims /Media/TV-UHD, and the scan is silently sent to a library
+	// that doesn't contain the path — Plex answers 200 and indexes nothing.
 	best := -1
-	for _, s := range plexSections(cfg) {
+	np := strings.TrimRight(p, "/")
+	for _, s := range secs {
 		for _, loc := range s.Locations {
-			if loc != "" && len(loc) > best && strings.HasPrefix(p, loc) {
-				best, key, title = len(loc), s.Key, s.Title
+			l := strings.TrimRight(loc, "/")
+			if l == "" || len(l) <= best {
+				continue
+			}
+			if np == l || strings.HasPrefix(np, l+"/") {
+				best, key, title = len(l), s.Key, s.Title
 			}
 		}
 	}
@@ -252,45 +265,24 @@ func plexSectionForPath(cfg plexConfig, p string) (key, title string, ok bool) {
 
 // ── items / episodes (plexgo — the primary client) ──
 
-// plexMediaIDs collects tvdb/tmdb ids from every Plex section via plexgo
-// Content.ListContent (includeGuids = /library/sections/{key}/all?includeGuids=1).
+// plexMediaIDs collects tvdb/tmdb ids from every Plex section, flattened from the
+// per-item inventory (plexItems) so both share one fetch and one GUID parser — notably
+// the legacy "themoviedb://" agent form, which the loose tmdb regex alone can't see.
 func plexMediaIDs() plexIDSet {
 	set := plexIDSet{Tvdb: map[string]bool{}, Tmdb: map[string]bool{}, ShowKey: map[string]string{}}
 	cfg := loadOptions().Plex
 	if cfg.URL == "" {
 		return set
 	}
-	api := plexAPI(cfg)
-	for _, s := range plexSections(cfg) {
-		ctx, cancel := plexCtx()
-		res, err := api.Content.ListContent(ctx, operations.ListContentRequest{
-			SectionID:           s.Key,
-			IncludeGuids:        components.BoolIntTrue.ToPointer(),
-			XPlexContainerStart: plexgo.Pointer(0),
-			XPlexContainerSize:  plexgo.Pointer(100000),
-		})
-		cancel()
-		if err != nil {
-			continue
+	for _, it := range plexItems(cfg) {
+		for _, v := range it.IDs["tvdb"] {
+			set.Tvdb[v] = true
+			if it.SecType == "show" && it.RatingKey != "" {
+				set.ShowKey[v] = it.RatingKey
+			}
 		}
-		for _, m := range mcMetadata(res.MediaContainerWithMetadata) {
-			itemTvdb := ""
-			for _, g := range m.Guids {
-				addPlexIDs(&set, g.GetID())
-				if mm := plexTvdbRE.FindStringSubmatch(g.GetID()); mm != nil {
-					itemTvdb = mm[1]
-				}
-			}
-			for _, md := range m.Media {
-				for _, pt := range md.Part {
-					if pt.File != nil {
-						addPlexIDs(&set, *pt.File)
-					}
-				}
-			}
-			if s.Type == "show" && itemTvdb != "" && m.RatingKey != nil {
-				set.ShowKey[itemTvdb] = *m.RatingKey
-			}
+		for _, v := range it.IDs["tmdb"] {
+			set.Tmdb[v] = true
 		}
 	}
 	return set

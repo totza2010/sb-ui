@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanConnCheck, useAutoscanWire, useAutoscanDeleteScan, useAutoscanManualAdd, type AutoscanConfig, type ScanStatus, type ConnLink, type WireResult } from '@/lib/api'
+import { useAutoscanConfig, useSaveAutoscanConfig, useAutoscanStatus, useAutoscanTrigger, useAutoscanClear, useAutoscanPause, useAutoscanConnCheck, useAutoscanWire, useAutoscanDeleteScan, useAutoscanManualAdd, type AutoscanConfig, type ScanStatus, type ConnLink, useReconcile, useArrFiles, useArrPlexRefresh, type RecItem, type RecMissingRoot, type RecMove, type WireResult } from '@/lib/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,7 +14,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/cn'
-import { ScanLine, Save, Copy, Check, RefreshCw, Play, Pause, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, ChevronRight, Plus, X, FolderInput, SlidersHorizontal } from 'lucide-react'
+import { ScanLine, Save, Copy, Check, RefreshCw, Play, Pause, Loader2, Webhook, Zap, Trash2, Clock, CheckCircle2, XCircle, MinusCircle, Filter, ChevronDown, ChevronRight, Plus, X, FolderInput, SlidersHorizontal, GitCompareArrows, FolderTree, RefreshCcw } from 'lucide-react'
 import { PathPicker } from '@/components/PathPicker'
 
 const EMPTY: AutoscanConfig = { enabled: false, delay_sec: 5, on_upload: false, webhook_token: '' }
@@ -151,6 +151,7 @@ export function AutoscanPanel() {
           <TabsTrigger value="activity" className="gap-1.5"><ScanLine className="h-3.5 w-3.5" />Activity</TabsTrigger>
           <TabsTrigger value="settings" className="gap-1.5"><SlidersHorizontal className="h-3.5 w-3.5" />Settings{!cfg.enabled && <span className="ml-0.5 rounded bg-warning/15 px-1 text-[10px] text-warning">off</span>}</TabsTrigger>
           <TabsTrigger value="webhook" className="gap-1.5"><Webhook className="h-3.5 w-3.5" />Webhook</TabsTrigger>
+          <TabsTrigger value="reconcile" className="gap-1.5"><GitCompareArrows className="h-3.5 w-3.5" />Reconcile</TabsTrigger>
         </TabsList>
 
         {/* ── Activity ─────────────────────────────────────────────── */}
@@ -445,6 +446,11 @@ export function AutoscanPanel() {
             </DialogContent>
           </Dialog>
         </TabsContent>
+
+        {/* ── Reconcile ────────────────────────────────────────────── */}
+        <TabsContent value="reconcile" className="space-y-4">
+          <ReconcilePanel />
+        </TabsContent>
       </Tabs>
     </div>
   )
@@ -454,6 +460,351 @@ export function AutoscanPanel() {
 // the current selection; open it lists the common set as checkable rows and lets you
 // filter or add a custom extension.
 const COMMON_EXTS = ['srt', 'sub', 'ass', 'ssa', 'idx', 'vtt', 'smi', 'nfo', 'txt', 'xml', 'jpg', 'jpeg', 'png', 'tbn', 'webp']
+// RecEpisodes — per-episode Plex state for one title, with a scan button per episode.
+// Plex only scans directories, so scanning an episode refreshes its season folder — far
+// cheaper than the show root, which re-lists every season.
+function RecEpisodes({ item }: { item: RecItem }) {
+  const [force, setForce] = useState(false)
+  const { data, isLoading, isFetching, refetch } = useArrFiles(item.kind, item.instance, item.item_id, true, item.ext_id, force)
+  const pref = useArrPlexRefresh()
+  // Per-path outcome so a click is never silent: the scan itself succeeds instantly, but
+  // Plex indexes asynchronously, so the badge won't flip until Re-check is pressed.
+  const [state, setState] = useState<Record<string, 'busy' | 'ok' | string>>({})
+  const files = (data?.files ?? []).filter((f) => f.has_file)
+
+  const scan = (path: string) => {
+    setState((m) => ({ ...m, [path]: 'busy' }))
+    pref.mutate({ path }, {
+      onSuccess: () => setState((m) => ({ ...m, [path]: 'ok' })),
+      onError: (e) => setState((m) => ({ ...m, [path]: (e as Error).message || 'failed' })),
+    })
+  }
+  const recheck = async () => { setForce(true); await refetch(); setForce(false) }
+
+  const ScanBtn = ({ path, title, big }: { path: string; title: string; big?: boolean }) => {
+    const st = state[path]
+    const c = big ? 'h-3.5 w-3.5' : 'h-3 w-3'
+    return (
+      <button title={typeof st === 'string' && st !== 'busy' && st !== 'ok' ? st : title} disabled={st === 'busy'}
+        onClick={(e) => { e.stopPropagation(); scan(path) }}
+        className={cn('shrink-0 rounded p-0.5 disabled:opacity-40',
+          st === 'ok' ? 'text-success' : st && st !== 'busy' ? 'text-destructive' : 'text-[#e5a00d] hover:bg-[#e5a00d]/15')}>
+        {st === 'busy' ? <Loader2 className={cn(c, 'animate-spin')} />
+          : st === 'ok' ? <CheckCircle2 className={c} />
+          : st ? <XCircle className={c} />
+          : <RefreshCcw className={c} />}
+      </button>
+    )
+  }
+
+  if (isLoading) return <p className="px-3 py-2 text-[11px] text-muted-foreground"><Loader2 className="mr-1 inline h-3 w-3 animate-spin" />Loading files…</p>
+  if (files.length === 0) return <p className="px-3 py-2 text-[11px] text-muted-foreground">No files on disk.</p>
+
+  // Group by season so a whole season can be scanned in one click. Plex scans
+  // directories, so the season folder is simply any episode file's parent.
+  const seasons = new Map<number, typeof files>()
+  const loose: typeof files = []
+  for (const f of files) {
+    if (f.season == null) { loose.push(f); continue }
+    const arr = seasons.get(f.season) ?? []
+    arr.push(f)
+    seasons.set(f.season, arr)
+  }
+  const dirOf = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : p)
+  const pathOf = (f: (typeof files)[number]) => f.full_path || f.path || ''
+  const anyOk = Object.values(state).some((v) => v === 'ok')
+
+  const EpRow = ({ f }: { f: (typeof files)[number] }) => {
+    const p = pathOf(f)
+    return (
+      <div className="flex items-center gap-2 py-0.5 text-[11px]">
+        {f.episode != null && <span className="w-8 shrink-0 font-mono text-muted-foreground">E{String(f.episode).padStart(2, '0')}</span>}
+        <span className="min-w-0 flex-1 truncate text-foreground" title={p}>{f.title || p}</span>
+        {f.in_plex
+          ? <span className="shrink-0 rounded bg-[#e5a00d] px-1 py-0.5 text-[9px] font-bold leading-none text-black">PLEX</span>
+          : <span className="shrink-0 rounded bg-amber-500/20 px-1 py-0.5 text-[9px] font-semibold leading-none text-amber-600">NO PLEX</span>}
+        {p && <ScanBtn path={p} title="Scan this episode's folder in Plex" />}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1 px-3 py-1.5">
+      <div className="flex items-center gap-2 border-b border-border/40 pb-1 text-[11px]">
+        <span className="min-w-0 flex-1 truncate font-medium text-foreground">Whole {item.kind === 'sonarr' ? 'series' : 'movie'}</span>
+        <span className="shrink-0 text-muted-foreground">{files.length} file{files.length === 1 ? '' : 's'}</span>
+        <button onClick={recheck} disabled={isFetching}
+          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40">
+          {isFetching ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Re-check'}
+        </button>
+        <ScanBtn path={item.folder} title="Scan the whole folder in Plex" big />
+      </div>
+      {anyOk && <p className="text-[10px] text-success">Scan sent to Plex. Indexing runs in the background — press Re-check in a moment to see the badges update.</p>}
+      {[...seasons.keys()].sort((a, b) => a - b).map((sn) => {
+        const eps = seasons.get(sn)!
+        const dir = dirOf(pathOf(eps[0]))
+        const missing = eps.filter((f) => !f.in_plex).length
+        return (
+          <div key={sn} className="rounded border border-border/40">
+            <div className="flex items-center gap-2 bg-secondary/30 px-2 py-1 text-[11px]">
+              <span className="shrink-0 font-mono font-medium text-foreground">Season {String(sn).padStart(2, '0')}</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground" title={dir}>{eps.length} ep{eps.length === 1 ? '' : 's'}{missing > 0 && ` · ${missing} not in Plex`}</span>
+              {dir && <ScanBtn path={dir} title="Scan this season's folder in Plex" big />}
+            </div>
+            <div className="px-2 py-0.5">{eps.map((f, i) => <EpRow key={i} f={f} />)}</div>
+          </div>
+        )
+      })}
+      {loose.length > 0 && <div className="px-2">{loose.map((f, i) => <EpRow key={i} f={f} />)}</div>}
+    </div>
+  )
+}
+
+// RecTitleRow — one title inside a root; expands to its episodes.
+function RecTitleRow({ item }: { item: RecItem }) {
+  const [open, setOpen] = useState(false)
+  const pref = useArrPlexRefresh()
+  return (
+    <div className="border-b border-border/40 last:border-0">
+      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+        <button onClick={() => setOpen((o) => !o)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
+          <span className="min-w-0 flex-1 truncate text-foreground">{item.title}</span>
+        </button>
+        <button title="Scan the whole folder in Plex" disabled={pref.isPending}
+          onClick={() => pref.mutate({ path: item.folder })}
+          className="shrink-0 rounded p-0.5 text-[#e5a00d] hover:bg-[#e5a00d]/15 disabled:opacity-40">
+          <RefreshCcw className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {open && <RecEpisodes item={item} />}
+    </div>
+  )
+}
+
+// RecMoveRow — a moved title; expands to its episodes so a single one can be rescanned
+// instead of the whole show.
+function RecMoveRow({ m }: { m: RecMove }) {
+  const [open, setOpen] = useState(false)
+  const pref = useArrPlexRefresh()
+  const [state, setState] = useState<Record<string, 'busy' | 'ok' | string>>({})
+  const scan = (path: string) => {
+    setState((m) => ({ ...m, [path]: 'busy' }))
+    pref.mutate({ path }, {
+      onSuccess: () => setState((m) => ({ ...m, [path]: 'ok' })),
+      onError: (e) => setState((m) => ({ ...m, [path]: (e as Error).message || 'failed' })),
+    })
+  }
+  const Ico = ({ path, fallback }: { path: string; fallback: React.ReactNode }) => {
+    const st = state[path]
+    if (st === 'busy') return <Loader2 className="h-3.5 w-3.5 animate-spin" />
+    if (st === 'ok') return <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+    if (st) return <XCircle className="h-3.5 w-3.5 text-destructive" />
+    return fallback
+  }
+  return (
+    <div className="rounded-md border border-warning/30 bg-warning/5">
+      <div className="flex w-full items-start gap-2 px-3 py-2">
+        <button onClick={() => setOpen((o) => !o)} className="flex min-w-0 flex-1 items-start gap-2 text-left">
+          <ChevronRight className={cn('mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
+          <span className="min-w-0 flex-1">
+            <span className="block text-xs font-medium text-foreground">{m.title}</span>
+            <span className="block truncate font-mono text-[10px] text-muted-foreground" title={m.from}>from {m.from}</span>
+            <span className="block truncate font-mono text-[10px] text-foreground" title={m.to}>to&nbsp;&nbsp; {m.to}</span>
+          </span>
+        </button>
+        {/* both halves need a scan: the old path so Plex drops it, the new one so it appears */}
+        <span className="flex shrink-0 items-center gap-0.5">
+          <button title={typeof state[m.from] === 'string' && !['busy', 'ok'].includes(state[m.from]) ? state[m.from] : 'Scan the OLD folder (so Plex drops the stale entry)'}
+            disabled={state[m.from] === 'busy'} onClick={() => scan(m.from)}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40">
+            <Ico path={m.from} fallback={<Trash2 className="h-3.5 w-3.5" />} />
+          </button>
+          <button title={typeof state[m.to] === 'string' && !['busy', 'ok'].includes(state[m.to]) ? state[m.to] : 'Scan the whole series at its NEW folder'}
+            disabled={state[m.to] === 'busy'} onClick={() => scan(m.to)}
+            className="rounded p-1 text-[#e5a00d] hover:bg-[#e5a00d]/15 disabled:opacity-40">
+            <Ico path={m.to} fallback={<RefreshCcw className="h-3.5 w-3.5" />} />
+          </button>
+        </span>
+      </div>
+      {open && (
+        <div className="border-t border-warning/20">
+          <RecEpisodes item={{ kind: m.kind, instance: m.instance, item_id: m.item_id, title: m.title, folder: m.to, has_file: true, ext_id: m.ext_id }} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// RecRootRow — one unmatched root; expands to its titles, which expand to episodes.
+function RecRootRow({ g }: { g: RecMissingRoot }) {
+  const [open, setOpen] = useState(false)
+  const pref = useArrPlexRefresh()
+  const [st, setSt] = useState<'busy' | 'ok' | string>('')
+  const [full, setFull] = useState<'busy' | 'ok' | string>('')
+  const scanRoot = (whole: boolean) => {
+    const set = whole ? setFull : setSt
+    set('busy')
+    pref.mutate({ path: g.root, full: whole }, {
+      onSuccess: () => set('ok'),
+      onError: (e) => set((e as Error).message || 'failed'),
+    })
+  }
+  return (
+    <div className="border-b border-border/50 last:border-0">
+      <div className="flex w-full items-center gap-2 px-3 py-1.5 text-xs">
+        <button onClick={() => setOpen((o) => !o)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
+          <span className="w-12 shrink-0 text-right font-medium tabular-nums text-warning">{g.count}</span>
+          <span className="w-24 shrink-0 truncate text-[11px] text-muted-foreground">{g.instance}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-foreground" title={g.root}>{g.root}</span>
+        </button>
+        {/* A root no Plex library covers can never be fixed by scanning — say so rather
+            than offering a button that only ever fails. */}
+        {g.covered ? (
+          <>
+            <span className={cn('hidden shrink-0 rounded px-1.5 py-0.5 text-[10px] sm:inline',
+              g.sec_count === 0 ? 'bg-destructive/10 text-destructive' : 'bg-secondary/60 text-muted-foreground')}>
+              {g.section}{g.sec_count === 0 && ' · empty'}
+            </span>
+            <button title={`Full scan of the ${g.section} library — needed once if it has never been scanned`} disabled={full === 'busy'} onClick={() => scanRoot(true)}
+              className={cn('shrink-0 rounded p-1', full === 'ok' ? 'text-success' : full && full !== 'busy' ? 'text-destructive' : g.sec_count === 0 ? 'text-destructive hover:bg-destructive/15' : 'text-muted-foreground hover:bg-accent hover:text-foreground')}>
+              {full === 'busy' ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : full === 'ok' ? <CheckCircle2 className="h-3.5 w-3.5" />
+                : full ? <XCircle className="h-3.5 w-3.5" />
+                : <ScanLine className="h-3.5 w-3.5" />}
+            </button>
+            <button title={`Scan just this root path in Plex (${g.section})`} disabled={st === 'busy'} onClick={() => scanRoot(false)}
+              className={cn('shrink-0 rounded p-1', st === 'ok' ? 'text-success' : st && st !== 'busy' ? 'text-destructive' : 'text-[#e5a00d] hover:bg-[#e5a00d]/15')}>
+              {st === 'busy' ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : st === 'ok' ? <CheckCircle2 className="h-3.5 w-3.5" />
+                : st ? <XCircle className="h-3.5 w-3.5" />
+                : <RefreshCcw className="h-3.5 w-3.5" />}
+            </button>
+          </>
+        ) : (
+          <span className="shrink-0 rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive" title="No Plex library has this path as a root, so Plex can never index it. Add a library in Plex for this folder, or map it to an existing one.">
+            no Plex library
+          </span>
+        )}
+      </div>
+      {open && (
+        <div className="border-t border-border/40 bg-secondary/20">
+          {!g.covered && (
+            <p className="px-3 py-2 text-[11px] text-destructive">
+              No Plex library is rooted at this folder, so scanning does nothing. Fix it in Plex (add a library for <span className="font-mono">{g.root}</span>) or add a path mapping to an existing library — then re-run the check.
+            </p>
+          )}
+          {g.covered && g.sec_count === 0 && (
+            <p className="px-3 py-2 text-[11px] text-destructive">
+              Plex library <span className="font-medium">{g.section}</span> holds 0 items. A targeted path scan cannot bootstrap a library Plex has never scanned &mdash; it accepts the request and indexes nothing. Use the <ScanLine className="mx-0.5 inline h-3 w-3" /> full-library scan once; targeted scans work normally afterwards.
+            </p>
+          )}
+          {g.covered && g.sec_nested && (
+            <p className="px-3 py-2 text-[11px] text-muted-foreground">
+              Note: this library&rsquo;s root sits inside another library&rsquo;s root. That works, but the outer library also indexes the shared folders &mdash; which is how a bare folder name can turn up as its own &ldquo;show&rdquo;.
+            </p>
+          )}
+          {g.items.map((it, i) => <RecTitleRow key={i} item={it} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ReconcilePanel — compares every *arr item against Plex BY PATH (see reconcile.go).
+// Matching on ids alone can't see a move, because Plex keeps the id and only the folder
+// changes; keying on paths surfaces the stale Plex path and the new arr path as a pair,
+// which are exactly the two paths Plex needs rescanned.
+function ReconcilePanel() {
+  const run = useReconcile()
+  const r = run.data
+  return (
+    <>
+      <Card className="space-y-3 rounded-xl border-border/70 p-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><GitCompareArrows className="h-4 w-4 text-muted-foreground" />arr &harr; Plex reconcile <span className="font-normal text-muted-foreground">&mdash; finds moved &amp; unscanned media</span></p>
+          <div className="flex items-center gap-1.5">
+            <Button size="sm" variant="outline" className="h-7 gap-1.5 text-xs" onClick={() => run.mutate(false)} disabled={run.isPending}>{run.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}Check</Button>
+            <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={() => run.mutate(true)} disabled={run.isPending}><Zap className="h-3.5 w-3.5" />Check &amp; scan moved</Button>
+          </div>
+        </div>
+        <p className="text-[11px] text-muted-foreground">Sonarr/Radarr emit no webhook when a title changes root folder, so Plex keeps pointing at the old path. This compares both sides directly &mdash; no history needed, so moves that already happened are still found.</p>
+        {!r ? (
+          <p className="rounded-md border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">Run a check to compare your *arr libraries against Plex.</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <StatCard label="Compared" value={r.compared} tone="text-foreground" />
+            <StatCard label="Moved" value={r.moves.length} tone={r.moves.length ? 'text-warning' : 'text-muted-foreground'} />
+            <StatCard label="Not in Plex" value={r.missing_arr} tone={r.missing_arr ? 'text-warning' : 'text-muted-foreground'} />
+            <StatCard label="Wrong match" value={r.mismatches.length} tone={r.mismatches.length ? 'text-destructive' : 'text-muted-foreground'} />
+          </div>
+        )}
+        {r && r.queued > 0 && <p className="rounded-md bg-success/10 px-3 py-2 text-[11px] text-success">Queued {r.queued} scan(s) &mdash; old and new path for each moved title.</p>}
+        {run.isError && <p className="text-[11px] text-destructive">{(run.error as Error).message}</p>}
+      </Card>
+
+      {r && r.moves.length > 0 && (
+        <Card className="space-y-2 rounded-xl border-border/70 p-4 shadow-sm">
+          <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><FolderInput className="h-4 w-4 text-muted-foreground" />Moved &mdash; Plex still points at the old folder</p>
+          <div className="space-y-1.5">
+            {r.moves.map((m, i) => <RecMoveRow key={i} m={m} />)}
+          </div>
+        </Card>
+      )}
+
+      {r && r.missing_roots.length > 0 && (
+        <Card className="space-y-2 rounded-xl border-border/70 p-4 shadow-sm">
+          <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><FolderTree className="h-4 w-4 text-muted-foreground" />Not in Plex, by root folder</p>
+          <p className="text-[11px] text-muted-foreground">A whole root missing usually means it isn&rsquo;t a Plex library, or its path needs a mapping &mdash; not that the media is gone.</p>
+          {(() => {
+            const bad = r.missing_roots.filter((g) => !g.covered)
+            if (bad.length === 0) return null
+            const n = bad.reduce((a, g) => a + g.count, 0)
+            return (
+              <p className="rounded-md bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+                {n} of {r.missing_arr} sit under {bad.length} root{bad.length === 1 ? '' : 's'} that no Plex library covers &mdash; scanning cannot fix these. Add a Plex library for {bad.slice(0, 3).map((g) => g.root).join(', ')}{bad.length > 3 ? ', …' : ''} or map them onto an existing one.
+              </p>
+            )
+          })()}
+          <div className="overflow-hidden rounded-md border border-border">
+            {r.missing_roots.map((g, i) => <RecRootRow key={i} g={g} />)}
+          </div>
+        </Card>
+      )}
+
+      {r && r.missing_srv.length > 0 && (
+        <Card className="space-y-2 rounded-xl border-border/70 p-4 shadow-sm">
+          <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><Trash2 className="h-4 w-4 text-muted-foreground" />Stale in Plex &mdash; no *arr owns these paths</p>
+          <div className="space-y-1">
+            {r.missing_srv.map((s, i) => (
+              <div key={i} className="flex items-center gap-2 px-1 text-xs">
+                <span className="w-40 shrink-0 truncate text-foreground">{s.title}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground" title={s.path}>{s.path}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {r && r.mismatches.length > 0 && (
+        <Card className="space-y-2 rounded-xl border-border/70 p-4 shadow-sm">
+          <p className="flex items-center gap-1.5 text-sm font-medium text-foreground"><XCircle className="h-4 w-4 text-destructive" />Wrong match &mdash; Plex matched the folder to another title</p>
+          <div className="space-y-1.5">
+            {r.mismatches.map((m, i) => (
+              <div key={i} className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
+                <p className="text-foreground">{m.arr.title} <span className="text-muted-foreground">&rarr; Plex has</span> {m.plex_title}</p>
+                <p className="truncate font-mono text-[10px] text-muted-foreground" title={m.path}>{m.path}</p>
+                <p className="font-mono text-[10px] text-muted-foreground">expected {m.expected} &middot; actual {m.actual || 'none'}</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </>
+  )
+}
+
 function ExtSelect({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')

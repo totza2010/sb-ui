@@ -256,21 +256,13 @@ func resetPlexDirs() { // called from putOptions when Plex config changes
 	plexIDMu.Unlock()
 }
 
-func addPlexIDs(set *plexIDSet, s string) {
-	if m := plexTvdbRE.FindStringSubmatch(s); m != nil {
-		set.Tvdb[m[1]] = true
-	}
-	if m := plexTmdbRE.FindStringSubmatch(s); m != nil {
-		set.Tmdb[m[1]] = true
-	}
-}
-
 // arrPlexRefresh triggers a targeted Plex scan of one arr path (folder or file).
 // The arr path is mapped to its Plex equivalent first, then the matching section is
 // scanned with ?path= — Plex picks up just that path (autoplow-style).
 func arrPlexRefresh(w http.ResponseWriter, req *http.Request) {
 	var b struct {
 		Path string `json:"path"`
+		Full bool   `json:"full"` // scan the whole matching library instead of just this path
 	}
 	_ = json.NewDecoder(req.Body).Decode(&b)
 	b.Path = strings.TrimSpace(b.Path)
@@ -294,7 +286,13 @@ func arrPlexRefresh(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "no Plex section matches "+plexPath+" — add a path mapping", http.StatusBadRequest)
 		return
 	}
-	if err := plexRefreshPath(cfg, secID, plexPath); err != nil {
+	// A library that has never been scanned can stay empty even though targeted
+	// refreshes report success, so offer a full-library scan to bootstrap it.
+	scanPath := plexPath
+	if b.Full {
+		scanPath = ""
+	}
+	if err := plexRefreshPath(cfg, secID, scanPath); err != nil {
 		http.Error(w, "Plex refresh failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -819,7 +817,20 @@ type arrFileEntry struct {
 const arrFileTTL = 5 * time.Minute
 
 func fetchArrFiles(inst arrInstance, kind, id, extID string) ([]arrFile, bool) {
+	return fetchArrFilesForce(inst, kind, id, extID, false)
+}
+
+// fetchArrFilesForce optionally bypasses the file cache. After the user triggers a Plex
+// scan, the cached answer is exactly the stale one they're trying to get past, so the
+// "re-check" path skips it (and the Plex id cache) to read current state.
+func fetchArrFilesForce(inst arrInstance, kind, id, extID string, force bool) ([]arrFile, bool) {
 	ck := kind + "|" + inst.Name + "|" + id
+	if force {
+		arrFileMu.Lock()
+		delete(arrFileCache, ck)
+		arrFileMu.Unlock()
+		resetPlexDirs() // per-episode presence is derived from the cached Plex id set
+	}
 	arrFileMu.Lock()
 	if e, ok := arrFileCache[ck]; ok && time.Since(e.ts) < arrFileTTL {
 		arrFileMu.Unlock()
@@ -909,7 +920,7 @@ func arrFiles(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "instance not found", http.StatusNotFound)
 		return
 	}
-	files, ok := fetchArrFiles(*inst, kind, id, ext)
+	files, ok := fetchArrFilesForce(*inst, kind, id, ext, req.URL.Query().Get("refresh") == "1")
 	if !ok {
 		http.Error(w, "fetch failed", http.StatusBadGateway)
 		return

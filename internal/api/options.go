@@ -178,15 +178,22 @@ type optionsConfig struct {
 	Teldrive     teldriveConfig `json:"teldrive"` // teldrive Postgres (integrity audit)
 }
 
-// mapArrPath rewrites an arr path to the Plex path using the longest matching
-// prefix mapping. Returns the path unchanged when nothing matches.
+// mapArrPath rewrites an arr path to the Plex path using the longest matching prefix
+// mapping. The prefix must end at a path boundary (or match in full), so a mapping for
+// /mnt/media never rewrites /mnt/mediabackup. Returns the path unchanged when nothing
+// matches.
 func mapArrPath(p string) string {
 	best := -1
 	out := p
 	for _, m := range loadOptions().PathMappings {
-		if m.From != "" && strings.HasPrefix(p, m.From) && len(m.From) > best {
-			best = len(m.From)
-			out = m.To + p[len(m.From):]
+		from := strings.TrimRight(m.From, "/")
+		if from == "" || len(from) <= best {
+			continue
+		}
+		if p == from {
+			best, out = len(from), strings.TrimRight(m.To, "/")
+		} else if strings.HasPrefix(p, from+"/") {
+			best, out = len(from), strings.TrimRight(m.To, "/")+p[len(from):]
 		}
 	}
 	return out
