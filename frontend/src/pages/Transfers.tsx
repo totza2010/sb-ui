@@ -481,8 +481,20 @@ export function TransfersPanel({ onJobStart }: { onJobStart: (id: string) => voi
 export function TransfersActivity({ autoOpenId }: { autoOpenId: string | null }) {
   const qc = useQueryClient()
   const { data: jobs = [] } = useJobs()
+  // Activity is what has run or is running. A queued job has done nothing yet, and rendering it
+  // here produced a card of empty dashes for work that had not started — while the Queue section
+  // above already lists it, with its position and controls. One place per state.
+  // Newest first, with the id breaking ties. Without the tiebreak, jobs created in the same
+  // instant compared equal and the list re-ordered itself on every poll — visibly shuffling
+  // while nothing was happening. Compared as dates rather than strings so entries written
+  // before timestamps carried sub-second precision still sort correctly against newer ones.
   const transfers = useMemo(
-    () => jobs.filter((j) => TRANSFER_OPS.has(j.action)).sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    () => jobs
+      .filter((j) => TRANSFER_OPS.has(j.action) && j.status !== 'pending')
+      .sort((a, b) => {
+        const d = new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        return d !== 0 ? d : a.id.localeCompare(b.id)
+      }),
     [jobs],
   )
   const purgeTel = usePurgeTelemetry()

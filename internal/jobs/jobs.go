@@ -34,12 +34,18 @@ type Job struct {
 	loaded bool // log loaded into memory (for history)
 }
 
+// TimeFormat keeps sub-second precision at a FIXED width, so timestamps compare correctly as
+// strings. RFC3339 has only second precision, which made every job created in the same second
+// indistinguishable; RFC3339Nano would fix that but trims trailing zeros, so ".5Z" and
+// ".50001Z" no longer sort against each other correctly.
+const TimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
+
 func (j *Job) toDict() map[string]any {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return map[string]any{
 		"id": j.ID, "tag": j.Tag, "action": j.Action, "status": j.Status,
-		"created_at": j.CreatedAt.UTC().Format(time.RFC3339), "log_lines": len(j.lines),
+		"created_at": j.CreatedAt.UTC().Format(TimeFormat), "log_lines": len(j.lines),
 	}
 }
 
@@ -86,7 +92,15 @@ func ListDicts() []map[string]any {
 		all = append(all, j)
 	}
 	mu.Unlock()
-	sort.Slice(all, func(i, k int) bool { return all[i].CreatedAt.After(all[k].CreatedAt) })
+	// Newest first, with the id breaking ties. Both halves matter: map iteration order is
+	// randomised by Go, and sort.Slice is not stable, so jobs created in the same instant came
+	// back in a different arrangement on every poll and the list visibly shuffled itself.
+	sort.SliceStable(all, func(i, k int) bool {
+		if all[i].CreatedAt.Equal(all[k].CreatedAt) {
+			return all[i].ID < all[k].ID
+		}
+		return all[i].CreatedAt.After(all[k].CreatedAt)
+	})
 	out := make([]map[string]any, len(all))
 	for i, j := range all {
 		out[i] = j.toDict()

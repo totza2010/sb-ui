@@ -204,3 +204,31 @@ describe('command preview', () => {
     expect(await screen.findByText(/Pick a source and a destination/i)).toBeInTheDocument()
   })
 })
+
+// Activity lists work that has run or is running. A queued job has done nothing yet, and used to
+// render as a card of empty dashes while the Queue section above already listed it — two places
+// showing the same item, one of them with nothing to show.
+describe('activity list', () => {
+  const job = (id: string, status: string) => ({
+    id, tag: `move: ${id} to rem:`, action: 'move', status,
+    created_at: '2026-08-18T00:00:00Z', log_lines: 0,
+  })
+
+  it('shows running and finished work, not what is still queued', async () => {
+    server.use(
+      http.get('/api/jobs', () => HttpResponse.json([
+        job('queued-one', 'pending'),
+        job('in-flight', 'running'),
+        job('done', 'completed'),
+      ])),
+      http.get('/api/transfers/:id/stats', () => HttpResponse.json({})),
+      http.get('/api/transfers/:id/telemetry', () => HttpResponse.json({ samples: [], findings: [] })),
+      ...baseHandlers(),
+    )
+    renderWithProviders(<Transfers />)
+
+    expect(await screen.findByText(/move: in-flight/)).toBeInTheDocument()
+    expect(screen.getByText(/move: done/)).toBeInTheDocument()
+    expect(screen.queryByText(/move: queued-one/)).not.toBeInTheDocument()
+  })
+})

@@ -303,8 +303,17 @@ export const useApplyPatches = () =>
     mutationFn: () => request('/apps/apply-patches', { method: 'POST' }),
   })
 
+// Poll faster while anything is actually moving. A three-second interval is fine for an idle
+// list, but a short transfer — a dry run, say — starts and finishes between two ticks, so the
+// only thing ever seen is the finished row. Jobs started server-side (by the queue or the
+// scheduler) have no click to hang an immediate refetch on, so the interval is all there is.
 export const useJobs = () =>
-  useQuery<Job[]>({ queryKey: ['jobs'], queryFn: () => request('/jobs'), refetchInterval: 3000 })
+  useQuery<Job[]>({
+    queryKey: ['jobs'],
+    queryFn: () => request('/jobs'),
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some((j) => j.status === 'running' || j.status === 'pending') ? 1000 : 3000,
+  })
 
 export const useConfig = (file: string) =>
   useQuery<ConfigFile>({ queryKey: ['config', file], queryFn: () => request(`/config/${file}`) })
@@ -1045,8 +1054,13 @@ export interface QbitConfig { enabled: boolean; action: 'pause' | 'throttle'; dl
 // on a domain core. See the wip/uploader-overhaul branch for the previous implementation.
 
 export interface QueueState { running: boolean; current: { job_id: string; label: string } | null; items: { job_id: string; label: string }[] }
+// Same reasoning: while the queue is working through items, its state changes every few seconds.
 export const useQueue = () =>
-  useQuery<QueueState>({ queryKey: ['queue'], queryFn: () => request('/queue'), refetchInterval: 3000 })
+  useQuery<QueueState>({
+    queryKey: ['queue'],
+    queryFn: () => request('/queue'),
+    refetchInterval: (q) => (q.state.data?.current || (q.state.data?.items.length ?? 0) > 0 ? 1000 : 3000),
+  })
 export const useQueueAction = () =>
   useMutation<{ ok: boolean }, Error, string>({ mutationFn: (path) => request(`/queue${path}`, { method: 'POST' }) })
 

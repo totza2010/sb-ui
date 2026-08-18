@@ -39,7 +39,7 @@ func indexPut(e histEntry) {
 func entryOf(j *Job) histEntry {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return histEntry{j.ID, j.Tag, j.Action, j.Status, j.CreatedAt.UTC().Format(time.RFC3339)}
+	return histEntry{j.ID, j.Tag, j.Action, j.Status, j.CreatedAt.UTC().Format(TimeFormat)}
 }
 
 // persistMeta records a job's metadata (no log) as soon as it starts running, so a restart
