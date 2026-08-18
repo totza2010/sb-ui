@@ -273,11 +273,15 @@ func queueTaskNow(w http.ResponseWriter, req *http.Request) {
 // Unlike a fire-and-forget channel, this is an ordered, inspectable list with
 // start/stop (pause), reorder, and remove — like RcloneBrowser's queue.
 
+// queueItem is one run waiting its turn. The task travels with it — exported so the queue can
+// be written to disk, because a queue that only exists in memory is emptied by every restart.
 type queueItem struct {
 	JobID string `json:"job_id"`
 	Label string `json:"label"`
-	task  Task
+	Task  Task   `json:"task"`
 }
+
+const queueRel = "cache/transfer_queue.json"
 
 var (
 	qMu               sync.Mutex
@@ -287,7 +291,61 @@ var (
 	queueRunning      = true
 	queueKick         = make(chan struct{}, 1)
 	queueOnce         sync.Once
+	queueLoaded       bool
 )
+
+// queueState is what survives a restart: the waiting items and whether the queue was paused.
+// The item being run is not part of it — that transfer dies with the process, so it is recorded
+// as interrupted rather than silently retried.
+type queuePersist struct {
+	Items   []queueItem `json:"items"`
+	Running bool        `json:"running"`
+}
+
+// saveQueue writes the queue to disk. Call under qMu.
+//
+// The queue used to live only in memory, so a self-update emptied it — while the jobs it had
+// already created stayed behind, marked failed by the restart. A batch queued overnight simply
+// vanished, and the history said it had failed rather than that it never ran.
+func saveQueue() {
+	store.WriteJSON(queueRel, queuePersist{Items: queueList, Running: queueRunning})
+}
+
+// loadQueue restores the queue once, on first use. Jobs for restored items were marked failed
+// when the process restarted — they were in flight or pending at the time — so they are put back
+// to pending here: they really are still waiting.
+func loadQueue() { // call under qMu
+	if queueLoaded {
+		return
+	}
+	queueLoaded = true
+	var p queuePersist
+	p.Running = true // a config that predates this field means "not paused"
+	store.ReadJSON(queueRel, &p)
+	queueList, queueRunning = p.Items, p.Running
+
+	queueList = reviveQueueJobs(queueList)
+	if len(queueList) > 0 {
+		saveQueue() // the new ids are what the queue refers to now
+	}
+}
+
+// reviveQueueJobs gives every restored item a live job and returns the updated items.
+//
+// A pending job exists only in memory: jobs are written to the index when they start running,
+// not when they are created. So the job a queued item pointed at is simply gone after a
+// restart. Keeping the dead id looked harmless until the item ran — every status update and log
+// line went to an id nothing knew about, so the run produced no card and no output at all,
+// which is exactly what testing found. A fresh job is also the truthful record, since the
+// previous one never got to run.
+func reviveQueueJobs(items []queueItem) []queueItem {
+	for i := range items {
+		j := jobs.Create(items[i].Label, items[i].Task.Op)
+		jobs.PushLog(j.ID, "Queued before sb-ui restarted; still waiting to run.")
+		items[i].JobID = j.ID
+	}
+	return items
+}
 
 func kickQueue() {
 	select {
@@ -302,6 +360,7 @@ func startQueueWorker() {
 			for range queueKick {
 				for {
 					qMu.Lock()
+					loadQueue()
 					if !queueRunning || queueCurrent != "" || len(queueList) == 0 {
 						qMu.Unlock()
 						break
@@ -309,9 +368,10 @@ func startQueueWorker() {
 					it := queueList[0]
 					queueList = queueList[1:]
 					queueCurrent, queueCurrentLabel = it.JobID, it.Label
+					saveQueue() // taken off the queue: if we restart mid-run it must not run twice
 					qMu.Unlock()
 
-					runTransfer(it.JobID, it.task.ID, it.task.Op, it.task.Items, it.task.Dst, it.task.DryRun, it.task.Opts)
+					runTransfer(it.JobID, it.Task.ID, it.Task.Op, it.Task.Items, it.Task.Dst, it.Task.DryRun, it.Task.Opts)
 
 					qMu.Lock()
 					queueCurrent, queueCurrentLabel = "", ""
@@ -328,7 +388,9 @@ func enqueueTask(t Task) string {
 	startQueueWorker()
 	j := jobs.Create(transferLabel(t.Op, t.Items, t.Dst, t.DryRun), t.Op)
 	qMu.Lock()
-	queueList = append(queueList, queueItem{JobID: j.ID, Label: j.Tag, task: t})
+	loadQueue()
+	queueList = append(queueList, queueItem{JobID: j.ID, Label: j.Tag, Task: t})
+	saveQueue()
 	qMu.Unlock()
 	kickQueue()
 	return j.ID
@@ -336,6 +398,7 @@ func enqueueTask(t Task) string {
 
 func queueState(w http.ResponseWriter, _ *http.Request) {
 	qMu.Lock()
+	loadQueue()
 	items := make([]map[string]string, 0, len(queueList))
 	for _, it := range queueList {
 		items = append(items, map[string]string{"job_id": it.JobID, "label": it.Label})
@@ -351,7 +414,9 @@ func queueState(w http.ResponseWriter, _ *http.Request) {
 
 func queueStart(w http.ResponseWriter, _ *http.Request) {
 	qMu.Lock()
+	loadQueue()
 	queueRunning = true
+	saveQueue() // the paused/running choice outlives a restart too
 	qMu.Unlock()
 	kickQueue()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -359,17 +424,21 @@ func queueStart(w http.ResponseWriter, _ *http.Request) {
 
 func queueStop(w http.ResponseWriter, _ *http.Request) {
 	qMu.Lock()
+	loadQueue()
 	queueRunning = false
+	saveQueue()
 	qMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func queuePurge(w http.ResponseWriter, _ *http.Request) {
 	qMu.Lock()
+	loadQueue()
 	for _, it := range queueList {
 		jobs.SetStatus(it.JobID, "stopped")
 	}
 	queueList = nil
+	saveQueue()
 	qMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -377,10 +446,12 @@ func queuePurge(w http.ResponseWriter, _ *http.Request) {
 func queueRemove(w http.ResponseWriter, req *http.Request) {
 	id := chi.URLParam(req, "id")
 	qMu.Lock()
+	loadQueue()
 	for i := range queueList {
 		if queueList[i].JobID == id {
 			queueList = append(queueList[:i], queueList[i+1:]...)
 			jobs.SetStatus(id, "stopped")
+			saveQueue()
 			break
 		}
 	}
@@ -392,11 +463,13 @@ func queueMove(dir int) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		id := chi.URLParam(req, "id")
 		qMu.Lock()
+		loadQueue()
 		for i := range queueList {
 			if queueList[i].JobID == id {
 				j := i + dir
 				if j >= 0 && j < len(queueList) {
 					queueList[i], queueList[j] = queueList[j], queueList[i]
+					saveQueue() // the order the user chose is part of the queue
 				}
 				break
 			}

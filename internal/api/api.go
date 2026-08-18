@@ -206,6 +206,10 @@ func Mount(r chi.Router) {
 	r.Post("/api/queue/{id}/up", queueMove(-1))
 	r.Post("/api/queue/{id}/down", queueMove(1))
 
+	// Start the queue worker at boot, not only when something is enqueued: a queue restored from
+	// disk has to start moving on its own, or persisting it would achieve nothing.
+	startQueueWorker()
+	kickQueue()
 	startScheduler()
 
 	// Smart Uploader (cloudplow++)
